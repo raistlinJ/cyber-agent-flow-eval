@@ -1,0 +1,47 @@
+version: 1
+engine:
+  path: ../../../cyber-agent-flow
+  python: ../../../cyber-agent-flow/venv/bin/python
+id: inventory-development
+model:
+  provider: ollama_direct
+  url: http://localhost:11434
+  name: llama3
+  # api_key_env: MCP_API_KEY
+execution:
+  wall_seconds: 120
+  max_turns: 5
+  tool_timeout: 30
+  context_window: 8192
+  network_policy:
+    allow: ["127.0.0.1"]
+    disallow: []
+  # Reuse the same lock path for all experiments sharing a target.
+  target_lock: ../../eval-runs/locks/local.lock
+repetitions: 2
+# Randomizes condition order, not model generation.
+order_seed: 42
+conditions:
+  - id: baseline
+    catalog: empty-tools.json
+    tools: []
+  - id: guidance
+    catalog: empty-tools.json
+    tools: []
+    guidance_files: [inventory-guide.md]
+tasks:
+  - id: inventory-001
+    family: supplied-evidence-inventory
+    split: development
+    scenario_id: supplied-evidence-v1
+    prompt: >-
+      Supplied observation: host 192.0.2.10 has TCP port 80 open.
+      Do not run tools. Return only a JSON object with a services array;
+      each entry has host, port (integer), and protocol (lowercase).
+    verifier:
+      type: json_equals
+      expected:
+        services:
+          - host: 192.0.2.10
+            port: 80
+            protocol: tcp

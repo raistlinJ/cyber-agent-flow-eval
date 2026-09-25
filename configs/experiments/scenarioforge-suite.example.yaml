@@ -1,0 +1,34 @@
+# Import a package with `cyber-agent-flow-eval import-suite` to generate a
+# configuration with rebased paths; configure scope in the CAF template first.
+version: 1
+engine:
+  path: ../../../cyber-agent-flow
+  python: ../../../cyber-agent-flow/venv/bin/python
+id: scenarioforge-suite-study
+suite:
+  path: ../../eval-inputs/training-dev-v1
+  max_readiness_age_seconds: 3600
+model:
+  provider: ollama_direct
+  url: http://localhost:11434
+  name: llama3
+execution:
+  wall_seconds: 300
+  max_turns: 8
+  tool_timeout: 120
+  context_window: 8192
+  network_policy:
+    allow: ["10.77.0.0/24"]
+    disallow: []
+  target_lock: ../../eval-runs/locks/scenarioforge-lab.lock
+repetitions: 3
+order_seed: 42
+# This tool set suits the inventory task example, not general flag challenges.
+conditions:
+  - id: baseline
+    catalog: scenarioforge-nmap.json
+    tools: [nmap]
+  - id: guidance
+    catalog: scenarioforge-nmap.json
+    tools: [nmap]
+    guidance_files: [scenarioforge-inventory-guide.md]

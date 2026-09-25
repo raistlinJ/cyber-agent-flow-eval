@@ -1,0 +1,46 @@
+{
+  "discover-and-recover": {
+    "discoverable_facts": [
+      {
+        "artifact": "InternalNetwork(subnet)",
+        "evidence": "/opt/scenario/network.conf",
+        "id": "internal-network",
+        "requires": [
+          "entry-network"
+        ],
+        "source_node": "entry",
+        "value": "10.78.0.0/24"
+      }
+    ],
+    "discovery": true,
+    "objective_nodes": {
+      "objective-1": "entry",
+      "objective-2": "target"
+    },
+    "objective_requires": {
+      "entry": [
+        "entry-network"
+      ],
+      "target": [
+        "internal-network"
+      ]
+    },
+    "required_checks": [
+      "containers",
+      "injects",
+      "ports",
+      "services"
+    ],
+    "source_nodes": [
+      "entry",
+      "target"
+    ],
+    "starting_facts": [
+      {
+        "artifact": "InternalNetwork(subnet)",
+        "id": "entry-network",
+        "value": "10.77.0.0/24"
+      }
+    ]
+  }
+}

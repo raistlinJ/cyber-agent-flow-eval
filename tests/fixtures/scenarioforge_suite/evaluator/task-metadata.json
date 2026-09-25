@@ -1,0 +1,14 @@
+{
+  "collect-flags": {
+    "required_checks": [
+      "containers",
+      "injects",
+      "ports",
+      "services"
+    ],
+    "source_nodes": [
+      "entry",
+      "target"
+    ]
+  }
+}

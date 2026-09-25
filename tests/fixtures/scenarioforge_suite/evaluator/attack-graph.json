@@ -1,0 +1,79 @@
+{
+  "assignment_order": [
+    "entry",
+    "target"
+  ],
+  "chain_order": [
+    "entry",
+    "target"
+  ],
+  "edges": [
+    {
+      "artifacts": [],
+      "artifacts_resolved": {},
+      "artifacts_resolved_kv": [],
+      "facts": [],
+      "relationship": "sequence",
+      "sequence_index": 1,
+      "source": "entry",
+      "target": "target"
+    }
+  ],
+  "fact_dependencies": [],
+  "nodes": [
+    {
+      "generator": {
+        "catalog": "",
+        "flag_value": "FLAG{fixture-entry}",
+        "id": "fixture-entry",
+        "kind": "",
+        "name": "",
+        "resolved_inputs": {},
+        "resolved_outputs": {},
+        "sequence_index": 1,
+        "source": ""
+      },
+      "id": "entry",
+      "ipv4": "10.77.0.10",
+      "is_vuln": false,
+      "label": "Entry",
+      "sequence_index": 1,
+      "type": ""
+    },
+    {
+      "generator": {
+        "catalog": "",
+        "flag_value": "FLAG{fixture-target}",
+        "id": "fixture-target",
+        "kind": "",
+        "name": "",
+        "resolved_inputs": {},
+        "resolved_outputs": {},
+        "sequence_index": 2,
+        "source": ""
+      },
+      "id": "target",
+      "ipv4": "10.77.0.20",
+      "is_vuln": false,
+      "label": "Target",
+      "sequence_index": 2,
+      "type": ""
+    }
+  ],
+  "scenario": "Evaluation fixture",
+  "schema_version": 2,
+  "stages": [
+    {
+      "indices": [
+        0
+      ],
+      "stage": 0
+    },
+    {
+      "indices": [
+        1
+      ],
+      "stage": 1
+    }
+  ]
+}

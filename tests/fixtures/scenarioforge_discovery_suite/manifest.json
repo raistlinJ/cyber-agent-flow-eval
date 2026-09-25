@@ -1,0 +1,23 @@
+{
+  "created_at": "2026-09-25T00:11:51.889385+00:00",
+  "files": {
+    "evaluator/attack-graph.json": "bf63c0361d62f562478aafa89ec8853808496729c2fb10af10c9c4c9bfd485ef",
+    "evaluator/readiness.json": "710bc5686ec44d25f5d1e43d38c9b271bd71ae79314035b245094393f4a71c99",
+    "evaluator/scenario.xml": "f0cad04e7c74fddb28f63a3ecc9c8bf53c0447625fafcbbc274452571dd397ba",
+    "evaluator/task-metadata.json": "97568d2ccad787ee8857bcd5083b908fdd9554ca26c6c057307689c4dfa08a33",
+    "evaluator/verifiers.json": "55e785218ce5e3d7c7db7a07e2fc17ecdb778246af41fad0e9ed596da2b5fab2",
+    "participant/tasks.json": "4a88358113b3954d378c39dacf5ae5b795ad89765502fb7282de55483a30738c"
+  },
+  "format": "scenarioforge-evaluation",
+  "id": "discovery-fixture",
+  "package_hash": "84f8a4ca0f649354f58cd094b5d48664ccf36b0e5c037e6d34a23bd39ea3fed5",
+  "scenario": {
+    "core_host": null,
+    "core_session_id": null,
+    "graph_sha256": "bf63c0361d62f562478aafa89ec8853808496729c2fb10af10c9c4c9bfd485ef",
+    "id": "sf-0897da61b3ae6fcb77eb678d",
+    "name": "Evaluation fixture",
+    "xml_sha256": "f0cad04e7c74fddb28f63a3ecc9c8bf53c0447625fafcbbc274452571dd397ba"
+  },
+  "version": 3
+}

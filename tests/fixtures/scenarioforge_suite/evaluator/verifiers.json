@@ -1,0 +1,9 @@
+{
+  "collect-flags": {
+    "expected": {
+      "entry": "FLAG{fixture-entry}",
+      "target": "FLAG{fixture-target}"
+    },
+    "type": "flags_match"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "tools": [
+    {
+      "name": "nmap",
+      "command": "nmap",
+      "description": "Scan the task's explicitly allowed hosts and ports. Use TCP connect scanning (-sT), numeric addresses (-n), and a bounded host timeout. Return observations for the requested inventory.",
+      "allow_args": true
+    }
+  ]
+}

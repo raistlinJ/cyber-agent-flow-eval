@@ -1,0 +1,9 @@
+{
+  "discover-and-recover": {
+    "expected": {
+      "objective-1": "FLAG{fixture-entry}",
+      "objective-2": "FLAG{fixture-target}"
+    },
+    "type": "flags_found"
+  }
+}

@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cyber-agent-flow-eval"
+version = "0.1.0"
+readme = "README.md"
+description = "Independent YAML evaluator using a configured CyberAgentFlow checkout"
+requires-python = ">=3.10"
+dependencies = ["PyYAML>=6,<7", "psutil>=5.9"]
+
+[project.optional-dependencies]
+test = ["pytest>=7", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+cyber-agent-flow-eval = "cyber_agent_flow_eval.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["cyber_agent_flow_eval*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
