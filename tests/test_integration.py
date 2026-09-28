@@ -59,3 +59,20 @@ def test_guest_hook_uses_account_directory_environment_and_recoverable_log(tmp_p
     assert '--property=EnvironmentFile=/etc/test.env' in argv
     assert '--property=RuntimeMaxSec=10' in argv
     assert argv[-2:] == ['--', '/bin/true']
+
+
+def test_guest_launches_block_during_maintenance_and_pending_recovery(tmp_path, monkeypatch):
+    import fcntl
+    from cyber_agent_flow_eval import guest_agent
+    monkeypatch.setattr(guest_agent, '_dispatch', lambda data: {'launched': True})
+    with guest_agent.MAINTENANCE_LOCK.open('a') as stream:
+        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        for operation in ('start', 'hook'):
+            with pytest.raises(ValueError, match='maintenance is active'):
+                guest_agent.dispatch({'op': operation})
+        assert guest_agent.dispatch({'op': 'stop'}) == {'launched': True}
+    guest_agent.MAINTENANCE_PENDING.write_text('{}')
+    with pytest.raises(ValueError, match='needs recovery'):
+        guest_agent.dispatch({'op': 'start'})
+    guest_agent.MAINTENANCE_PENDING.unlink()
+    assert guest_agent.dispatch({'op': 'start'}) == {'launched': True}

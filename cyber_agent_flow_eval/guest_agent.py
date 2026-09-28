@@ -22,6 +22,8 @@ import zipfile
 
 OUTPUT_FILES = {'result.json', 'messages.json', 'checkpoint.json', 'events.jsonl', 'worker.log'}
 CONTROL_DIR = Path('/run/cyber-agent-flow-eval')
+MAINTENANCE_LOCK = Path('/run/caf-application-maintenance.lock')
+MAINTENANCE_PENDING = Path('/run/caf-application-maintenance.pending')
 
 
 def command(argv, timeout=20, allow_failure=False):
@@ -60,7 +62,7 @@ def service_control(data):
         yield stream
 
 
-def dispatch(data):
+def _dispatch(data):
     op = data['op']
     if op == 'probe':
         root = Path(data['engine']['path'])
@@ -92,6 +94,10 @@ for name in ['mcp', 'ollama', 'requests', 'PyYAML', 'psutil']:
 print(json.dumps({'python': sys.version, 'executable': sys.executable, 'dependencies': packages}))
 '''
         runtime = json.loads(command([data['engine']['python'], '-c', runtime_script]))
+        if (root / '.git').exists():
+            git_args = ['git', '-c', 'safe.directory=' + str(root), '-c', 'core.fsmonitor=false', '-C', str(root)]
+            runtime['engine_revision'] = command([*git_args, 'rev-parse', 'HEAD']).strip()
+            runtime['engine_modified'] = bool(command([*git_args, 'status', '--porcelain', '--untracked-files=no']).strip())
         if data.get('user'):
             pwd.getpwnam(data['user'])
         systemd = command(['systemctl', 'show', '--property=Version', '--value']).strip()
@@ -234,6 +240,21 @@ print(json.dumps({'python': sys.version, 'executable': sys.executable, 'dependen
             time.sleep(0.2)
         raise ValueError('Guest hook exceeded its deadline')
     raise ValueError(f'Unknown guest operation: {op}')
+
+
+def dispatch(data):
+    # Serialize launches with offline application maintenance, including after a
+    # host disconnect. Existing units are checked by the maintenance helper.
+    if data.get('op') not in ('start', 'hook'):
+        return _dispatch(data)
+    with MAINTENANCE_LOCK.open('a') as stream:
+        try:
+            fcntl.flock(stream, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('Application maintenance is active; retry after it completes') from None
+        if MAINTENANCE_PENDING.exists():
+            raise ValueError('Application maintenance needs recovery before experiment launch')
+        return _dispatch(data)
 
 
 if __name__ == '__main__':
