@@ -113,6 +113,12 @@ def test_remote_run_stages_public_data_collects_scores_and_resumes(remote_spec, 
     assert len(rows) == 2
     assert all(r['status'] == 'completed' and r['score'] == 0.5 and r['flags_observed'] == 1 for r in rows)
     assert read_json(output / 'manifest.json')['source_hashes']['engine']
+    transport = read_json(next(output.glob('trials/*/attempt-*/transport.json')))
+    assert transport['phase'] == 'collected' and transport['files_uploaded'] == transport['files_total'] == 7
+    assert transport['bytes_uploaded'] == transport['bytes_total'] > 0
+    assert [event['phase'] for event in transport['phase_events']] == [
+        'preparing', 'uploading', 'starting', 'executing', 'stopping', 'collecting', 'collected']
+    assert transport['execution_started_at'] <= transport['updated_at']
     uploads = [base64.b64decode(data['content']) for _, op, data in agent.calls if op == 'write']
     assert b'FLAG{private}' not in b''.join(uploads)
     assert b'hidden-objective' not in b''.join(uploads)
@@ -425,3 +431,19 @@ def test_delayed_start_cannot_revive_cancelled_service(config, tmp_path, monkeyp
     with pytest.raises(ValueError, match='cancelled'):
         guest_agent.dispatch({'op': 'start', 'path': str(root), 'unit': 'caf-eval-race', 'seconds': 10,
                               'user': config['user'], 'engine': {'path': '/opt/caf', 'python': '/opt/caf/venv/bin/python'}})
+
+
+def test_optional_progress_write_failure_does_not_skip_worker_stop(remote_spec, tmp_path, monkeypatch):
+    from cyber_agent_flow_eval import proxmox
+    path, backend, agent = remote_spec
+    original = proxmox.write_json
+    failures = []
+    def write(target, record):
+        if record.get('phase') == 'stopping':
+            failures.append(str(target))
+            raise OSError('Progress journal temporarily unavailable')
+        original(target, record)
+    monkeypatch.setattr(proxmox, 'write_json', write)
+    rows = run(path, tmp_path / 'results')
+    assert failures and all(row['status'] == 'completed' for row in rows)
+    assert sum(op == 'stop' for _, op, _ in agent.calls) >= len(rows)

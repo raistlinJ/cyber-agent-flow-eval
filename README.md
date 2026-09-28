@@ -387,3 +387,14 @@ guest install, network connection or persistent daemon.
 
 See [Proxmox's `qm guest exec` documentation](https://github.com/proxmox/pve-docs/blob/master/generated/qm.1-synopsis.adoc)
 for stdin and synchronous-execution limits.
+
+Sample runs expose host-side preparation and guest-stage progress in the
+orchestrator WebUI when both host checkouts are updated. Each trial's
+`transport.json` records its phase, timestamps, acknowledged input file/byte
+counts, and last observed service status. Phases distinguish preparing, uploading,
+starting, executing, stopping, collecting and collected. Phase changes are retained
+as a bounded event list. These are host journal writes using existing guest calls;
+viewing progress adds no guest polling. An upload count advances only after the
+file transfer returns successfully. Model turns/tokens are not streamed by this
+transport. Optional progress-write failures cannot bypass worker cleanup; the
+initial recovery journal remains mandatory before any guest mutation.

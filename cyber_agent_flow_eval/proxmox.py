@@ -227,23 +227,42 @@ class ProxmoxBackend:
                   'path': self.config['workspace'].rstrip('/') + '/' + token, 'stopped': False,
                   'started_at': datetime.now(timezone.utc).isoformat()}
         record['argv'] = [self.engine['python'], record['path'] + '/cyber_agent_flow_eval/worker.py', record['path'] + '/attempt']
+        def checkpoint(phase, **fields):
+            if record.get('phase') != phase:
+                record.setdefault('phase_events', []).append(dict(phase=phase, at=datetime.now(timezone.utc).isoformat()))
+                record['phase_events'] = record['phase_events'][-20:]
+            record.update(fields, phase=phase, updated_at=datetime.now(timezone.utc).isoformat())
+            try:
+                write_json(directory / 'transport.json', record)
+            except OSError:
+                if phase == 'preparing':
+                    raise  # Initial recovery journal is mandatory before mutation.
+                # Optional progress writes must never prevent worker cleanup.
         # Journal before the first mutating RPC. An interrupted start is recoverable.
-        write_json(directory / 'transport.json', record)
+        checkpoint('preparing')
         self.agent.call(self.vmid, 'mkdir', path=record['path'], user=self.config['user'])
         package = Path(__file__).resolve().parent
-        for name in ('__init__.py', 'worker.py', 'execution_service.py', 'engine.py', 'storage.py'):
-            self.agent.put(self.vmid, record['path'] + '/cyber_agent_flow_eval/' + name, (package / name).read_bytes())
-        for name in ('input.json', 'catalog.json'):
-            self.agent.put(self.vmid, record['path'] + '/attempt/' + name, (directory / name).read_bytes())
+        uploads = [(record['path'] + '/cyber_agent_flow_eval/' + name, (package / name).read_bytes())
+                   for name in ('__init__.py', 'worker.py', 'execution_service.py', 'engine.py', 'storage.py')]
+        uploads += [(record['path'] + '/attempt/' + name, (directory / name).read_bytes()) for name in ('input.json', 'catalog.json')]
+        checkpoint('uploading', files_uploaded=0, files_total=len(uploads), bytes_uploaded=0,
+                   bytes_total=sum(len(content) for _, content in uploads))
+        for path, content in uploads:
+            self.agent.put(self.vmid, path, content)
+            checkpoint('uploading', files_uploaded=record['files_uploaded'] + 1,
+                       bytes_uploaded=record['bytes_uploaded'] + len(content))
         started = time.monotonic()
         status = {}
         try:
+            checkpoint('starting', execution_started_at=datetime.now(timezone.utc).isoformat())
             self.agent.call(self.vmid, 'start', path=record['path'], unit=record['unit'], seconds=seconds,
                             user=self.config['user'], engine=self.engine,
                             environment_file=self.config.get('environment_file'))
+            checkpoint('executing')
             deadline = started + seconds + 15
             while True:
                 status = self.agent.call(self.vmid, 'status', unit=record['unit'])
+                checkpoint('executing', service_status=status)
                 if status.get('SubState') in {'exited', 'failed', 'dead'} or status.get('LoadState') == 'not-found':
                     break
                 if time.monotonic() >= deadline:
@@ -251,12 +270,12 @@ class ProxmoxBackend:
                     break
                 time.sleep(self.config['poll_seconds'])
         finally:
+            checkpoint('stopping')
             self.stop(record)
             record.update(stopped=True, service_status=status, execution_seconds=time.monotonic() - started)
-            write_json(directory / 'transport.json', record)
+            checkpoint('collecting')
             self.collect(directory, record)
-            record['collected'] = True
-            write_json(directory / 'transport.json', record)
+            checkpoint('collected', collected=True)
         result_path = directory / 'guest-output/result.json'
         if status.get('Result') == 'timeout':
             result = {'status': 'timeout', 'final_answer': None, 'errors': ['Guest wall-clock budget exceeded']}
