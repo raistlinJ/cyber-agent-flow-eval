@@ -299,3 +299,18 @@ Each `backend.before_trial` entry additionally accepts `user`, `cwd`, and
 hook retains its existing root execution context. These settings apply only to
 that command, not to the evaluator worker. The separate orchestrator uses the
 same command transport for its once-per-workflow preparation steps.
+
+## Coordinating with application updates
+
+Evaluator 0.4.1+ takes a shared guest maintenance lock while launching a trial or
+hook. The orchestrator takes its exclusive counterpart while updating application
+source, checks for existing jobs, and retains a pending recovery marker when an
+activation is interrupted. The lock is `/run/caf-application-maintenance.lock`;
+the persistent marker is `/var/lib/caf-application-maintenance.pending`. A pending
+marker blocks new trial/hook launches after a reboot too. Stop/recovery operations
+remain available. Use the orchestrator's application rollback/recovery flow to
+resolve interrupted maintenance, rather than deleting the marker to bypass it.
+
+All coordinators sharing these guests need the updated evaluator. The Proxmox
+engine probe also records `engine_revision` and `engine_modified` in the manifest's
+`engine_runtime` when CAF is a Git checkout, alongside the existing source hash.

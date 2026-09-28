@@ -23,7 +23,7 @@ import zipfile
 OUTPUT_FILES = {'result.json', 'messages.json', 'checkpoint.json', 'events.jsonl', 'worker.log'}
 CONTROL_DIR = Path('/run/cyber-agent-flow-eval')
 MAINTENANCE_LOCK = Path('/run/caf-application-maintenance.lock')
-MAINTENANCE_PENDING = Path('/run/caf-application-maintenance.pending')
+MAINTENANCE_PENDING = Path('/var/lib/caf-application-maintenance.pending')
 
 
 def command(argv, timeout=20, allow_failure=False):
