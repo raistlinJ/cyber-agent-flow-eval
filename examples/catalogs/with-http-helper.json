@@ -1,0 +1,32 @@
+{
+  "tools": [
+    {
+      "name": "nmap",
+      "command": "nmap",
+      "allow_args": true,
+      "description": "Inspect in-scope hosts and services. Use bounded scans and explicit targets."
+    },
+    {
+      "name": "curl",
+      "command": "curl",
+      "allow_args": true,
+      "description": "Retrieve content from an in-scope URL. Use explicit URLs and bounded request times."
+    },
+    {
+      "name": "python3",
+      "command": "python3",
+      "allow_args": true,
+      "description": "Run Python 3 code for parsing or in-scope lab operations. Use explicit targets and bounded operations."
+    },
+    {
+      "name": "http_flag_walk",
+      "command": "python3",
+      "allow_args": true,
+      "description": "Fetch up to six same-origin linked pages from an in-scope HTTP(S) URL and report FLAG{...} strings. Pass exactly one URL. Requests have five-second timeouts; redirects are refused.",
+      "base_args": [
+        "-c",
+        "\"\"\"Illustrative added tool, not an artifact produced by a CAF generation run.\n\nFetch at most six same-origin linked pages and report FLAG{...} strings. The\ncatalog embeds this source so no separate executable must be staged in the guest.\n\"\"\"\nimport json\nimport re\nimport sys\nfrom urllib.error import HTTPError, URLError\nfrom urllib.parse import urldefrag, urljoin, urlsplit\nfrom urllib.request import HTTPRedirectHandler, build_opener\n\n\nclass NoRedirect(HTTPRedirectHandler):\n    def redirect_request(self, request, fp, code, msg, headers, newurl):\n        return None\n\n\ndef main():\n    if len(sys.argv) != 2:\n        raise SystemExit('Usage: http_flag_walk URL')\n    root = sys.argv[1]\n    origin = urlsplit(root)\n    if origin.scheme not in {'http', 'https'} or not origin.hostname or origin.username or origin.password:\n        raise SystemExit('Provide an HTTP(S) URL without credentials')\n    pending, seen, flags, errors = [root], set(), set(), []\n    opener = build_opener(NoRedirect())\n    while pending and len(seen) < 6:\n        url = pending.pop(0)\n        if url in seen:\n            continue\n        seen.add(url)\n        try:\n            with opener.open(url, timeout=5) as response:\n                body = response.read(65536).decode('utf-8', errors='replace')\n            flags.update(re.findall(r'FLAG\\{[^{}\\s]+\\}', body))\n            for href in re.findall(r'href=[\"\\x27]([^\"\\x27]+)[\"\\x27]', body, flags=re.IGNORECASE):\n                child = urldefrag(urljoin(url, href))[0]\n                parsed = urlsplit(child)\n                if (parsed.scheme, parsed.netloc) == (origin.scheme, origin.netloc) and child not in seen:\n                    pending.append(child)\n        except (HTTPError, URLError, TimeoutError, OSError) as exc:\n            errors.append({'url': url, 'error': str(exc)})\n    print(json.dumps({'flags': sorted(flags), 'pages_read': len(seen), 'errors': errors}))\n\n\nif __name__ == '__main__':\n    main()\n"
+      ]
+    }
+  ]
+}

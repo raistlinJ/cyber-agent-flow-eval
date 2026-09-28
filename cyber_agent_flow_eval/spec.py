@@ -55,13 +55,20 @@ def strings(value, label):
 def resolve(path):
     path = Path(path).resolve()
     spec = yaml.load(path.read_text(), Loader=StrictLoader)
-    fields(spec, ['version', 'id', 'engine', 'description', 'model', 'execution', 'repetitions', 'order_seed', 'tasks', 'suite', 'conditions'],
+    fields(spec, ['version', 'id', 'engine', 'backend', 'orchestration', 'description', 'model', 'execution', 'repetitions', 'order_seed', 'tasks', 'suite', 'conditions'],
            ['version', 'id', 'engine', 'model', 'execution', 'conditions'], 'experiment')
     if type(spec['version']) is not int or spec['version'] != 1:
         raise ValueError('Only schema version 1 is supported')
     identifier(spec['id'])
+    if 'orchestration' in spec:
+        fields(spec['orchestration'], ['workflow_id', 'workflow_hash'], ['workflow_id', 'workflow_hash'], 'orchestration')
+        identifier(spec['orchestration']['workflow_id'])
+        if not isinstance(spec['orchestration']['workflow_hash'], str) or not re.fullmatch(r'[0-9a-f]{64}', spec['orchestration']['workflow_hash']):
+            raise ValueError('orchestration.workflow_hash must be a SHA-256 digest')
+    from .backends import resolve_backend
+    spec['backend'] = resolve_backend(spec.get('backend', {'type': 'local'}))
     from .engine import resolve_engine
-    spec['engine'] = resolve_engine(spec['engine'], path.parent)
+    spec['engine'] = resolve_engine(spec['engine'], path.parent, remote=spec['backend']['type'] != 'local')
     if ('tasks' in spec) == ('suite' in spec):
         raise ValueError('Specify either inline tasks or a ScenarioForge suite')
     if 'suite' in spec:
@@ -91,13 +98,18 @@ def resolve(path):
     if 'ssl_verify' in model and type(model['ssl_verify']) is not bool:
         raise ValueError('ssl_verify must be boolean')
     execution = spec['execution']
-    fields(execution, ['wall_seconds', 'max_turns', 'tool_timeout', 'context_window', 'network_policy', 'target_lock', 'reveal_network_policy'],
+    fields(execution, ['wall_seconds', 'max_turns', 'tool_timeout', 'context_window', 'network_policy', 'target_lock', 'reveal_network_policy', 'progress_seconds'],
            ['wall_seconds', 'max_turns', 'network_policy', 'target_lock'], 'execution')
     execution.setdefault('reveal_network_policy', False)
     if type(execution['reveal_network_policy']) is not bool:
         raise ValueError('reveal_network_policy must be boolean')
     execution.setdefault('tool_timeout', 60)
     execution.setdefault('context_window', 8192)
+    execution.setdefault('progress_seconds', [60, 300, 600])
+    checkpoints = execution['progress_seconds']
+    if not isinstance(checkpoints, list) or any(type(v) is not int or v <= 0 for v in checkpoints) or len(checkpoints) != len(set(checkpoints)):
+        raise ValueError('execution.progress_seconds must contain unique positive integer checkpoints')
+    execution['progress_seconds'] = sorted(checkpoints)
     for key in ['wall_seconds', 'max_turns', 'tool_timeout', 'context_window']:
         positive(execution[key], key)
     policy = execution['network_policy']

@@ -1,0 +1,354 @@
+import base64
+from contextlib import nullcontext
+import io
+import json
+import os
+from pathlib import Path
+import pwd
+import subprocess
+import sys
+import zipfile
+
+import pytest
+import yaml
+
+from cyber_agent_flow_eval import backends, guest_agent
+from cyber_agent_flow_eval.backends import resolve_backend
+from cyber_agent_flow_eval.engine import runtime_identity
+from cyber_agent_flow_eval.proxmox import CHUNK, GuestAgent, ProxmoxBackend, unpack
+from cyber_agent_flow_eval.runner import CleanupError, PreparationError, run, source_identity
+from cyber_agent_flow_eval.spec import resolve
+from cyber_agent_flow_eval.storage import read_json, write_json
+from test_experiments import specification
+
+
+@pytest.fixture
+def config(tmp_path):
+    return resolve_backend({'type': 'proxmox', 'participant_vmid': 9403, 'app_vmid': 9402,
+                            'user': pwd.getpwuid(os.getuid()).pw_name,
+                            'workspace': str(tmp_path / 'guest workspace')})
+
+
+class GuestSimulator(GuestAgent):
+    """Use real binary transfer/helper code; emulate only Linux service lifecycle."""
+    def __init__(self, config):
+        super().__init__(config)
+        self.calls = []
+        self.services = {}
+        self.fail_stop = False
+        self.timeout = False
+
+    def call(self, vmid, op, **data):
+        self.calls.append((vmid, op, data))
+        if op == 'probe':
+            return {'engine': source_identity(data['engine']['path'])['engine'],
+                    'runtime': runtime_identity(data['engine'])}
+        if op == 'start':
+            root = Path(data['path'])
+            directory = root / 'attempt'
+            env = dict(os.environ, CAF_RUN_BASE_DIR=str(directory), CAF_TOOLS_CONFIG_PATH=str(directory / 'catalog.json'))
+            with (directory / 'worker.log').open('w') as log:
+                result = subprocess.run([data['engine']['python'], str(root / 'cyber_agent_flow_eval/worker.py'), str(directory)],
+                                        env=env, cwd=data['engine']['path'], stdout=log, stderr=log, timeout=10)
+            self.services[data['unit']] = {'LoadState': 'loaded', 'SubState': 'failed' if self.timeout else 'exited',
+                                           'Result': 'timeout' if self.timeout else 'success',
+                                           'ExecMainStatus': str(result.returncode)}
+            if self.timeout:
+                (directory / 'result.json').unlink(missing_ok=True)
+            return {}
+        if op == 'status':
+            return self.services[data['unit']]
+        if op == 'stop':
+            if self.fail_stop:
+                raise ValueError('guest disconnected')
+            return {'ActiveState': 'inactive'}
+        if op == 'hook':
+            log = Path(self.config['workspace']).parent / 'hook.log'
+            log.write_text('restored known state\n')
+            return {'exitcode': 0, 'log_path': str(log)}
+        return guest_agent.dispatch(dict(data, op=op))
+
+
+ENGINE_SOURCE = '''
+class Client:
+    def chat(self):
+        return {'content': '{"flags":["FLAG{observed}"]}'}
+class MCPSession:
+    def __init__(self, *, allowed_tools=None, guidance_text=None, reveal_network_policy=True, **kwargs):
+        self.callback = kwargs['event_callback']
+        self.messages = [{'role': 'system', 'content': 'test'}]
+        self._client = Client()
+        self._exit_stack = None
+    async def start(self): pass
+    async def stop(self): pass
+    async def chat(self, prompt, cancel_event):
+        self.callback({'type': 'tool_result', 'result': 'FLAG{observed}'})
+        self.messages.append({'role': 'assistant', 'content': self._client.chat()['content']})
+'''
+
+
+@pytest.fixture
+def remote_spec(specification, config, tmp_path, monkeypatch):
+    engine = tmp_path / 'guest CAF with spaces'
+    engine.mkdir()
+    (engine / 'mcp_client.py').write_text(ENGINE_SOURCE)
+    for name in ('mcp_kali.py', 'session_logger.py'):
+        (engine / name).write_text('# fixture engine\n')
+    raw = yaml.safe_load(specification.read_text())
+    raw['engine'] = {'path': str(engine), 'python': sys.executable}
+    raw['backend'] = config
+    raw['tasks'][0]['verifier'] = {'type': 'flags_found', 'expected': {'hidden-objective': 'FLAG{observed}', 'unfound': 'FLAG{private}'}}
+    specification.write_text(yaml.safe_dump(raw))
+    agent = GuestSimulator(config)
+    backend = ProxmoxBackend(config, raw['engine'], agent=agent)
+    monkeypatch.setattr(backends, 'create_backend', lambda spec: backend)
+    monkeypatch.setattr(backend, 'lock', nullcontext)
+    return specification, backend, agent
+
+
+def test_remote_run_stages_public_data_collects_scores_and_resumes(remote_spec, tmp_path):
+    path, backend, agent = remote_spec
+    output = tmp_path / 'results'
+    rows = run(path, output)
+    assert len(rows) == 2
+    assert all(r['status'] == 'completed' and r['score'] == 0.5 and r['flags_observed'] == 1 for r in rows)
+    assert read_json(output / 'manifest.json')['source_hashes']['engine']
+    uploads = [base64.b64decode(data['content']) for _, op, data in agent.calls if op == 'write']
+    assert b'FLAG{private}' not in b''.join(uploads)
+    assert b'hidden-objective' not in b''.join(uploads)
+    for row in rows:
+        directory = output / row['attempt_path']
+        assert (directory / 'guest-output/model_calls/call-000001.json').is_file()
+        assert read_json(directory / 'transport.json')['stopped']
+        assert read_json(directory / 'evaluation.json')['evidence'][0] == 'guest-output/result.json'
+    count = len([1 for _, op, _ in agent.calls if op == 'start'])
+    run(path, output, resume=True)
+    assert len([1 for _, op, _ in agent.calls if op == 'start']) == count
+
+
+def test_guest_timeout_retains_progress_without_final_answer(remote_spec, tmp_path):
+    path, backend, agent = remote_spec
+    agent.timeout = True
+    rows = run(path, tmp_path / 'results')
+    assert all(r['status'] == 'timeout' and r['verified_success'] is None and r['flags_observed'] == 1 for r in rows)
+
+
+def test_unconfirmed_cleanup_aborts_remaining_trials(remote_spec, tmp_path):
+    path, backend, agent = remote_spec
+    agent.fail_stop = True
+    with pytest.raises(CleanupError, match='Cannot confirm'):
+        run(path, tmp_path / 'results')
+    assert len([1 for _, op, _ in agent.calls if op == 'start']) == 1
+    record = read_json(tmp_path / 'results/trials/trial-000001/attempt-0001/transport.json')
+    assert record['stopped'] is False
+    # Recovery stops the previous guest service before a retry starts.
+    agent.fail_stop = False
+    run(path, tmp_path / 'results', resume=True, retry_failed=True)
+    assert read_json(tmp_path / 'results/trials/trial-000001/attempt-0001/transport.json')['stopped']
+
+
+def test_binary_chunk_transfer_and_integrity(config, tmp_path):
+    agent = GuestSimulator(config)
+    content = os.urandom(CHUNK * 3 + 7)
+    path = str(tmp_path / "file with ' quotes and spaces")
+    agent.put(9403, path, content)
+    assert agent.get(9403, path) == content
+    assert len([1 for _, op, _ in agent.calls if op == 'write']) == 4
+
+
+def test_download_rejects_changed_file(config, tmp_path, monkeypatch):
+    agent = GuestSimulator(config)
+    path = tmp_path / 'data'
+    path.write_bytes(b'abc')
+    original = agent.call
+    def tamper(vmid, op, **data):
+        result = original(vmid, op, **data)
+        if op == 'read':
+            result['content'] = base64.b64encode(b'bad').decode()
+        return result
+    monkeypatch.setattr(agent, 'call', tamper)
+    with pytest.raises(ValueError, match='checksum mismatch'):
+        agent.get(9403, str(path))
+
+
+def test_qm_uses_argv_async_polling_and_checks_truncation(config, monkeypatch):
+    agent = GuestAgent(config)
+    commands = []
+    responses = iter([{'pid': 12}, {'exited': False}, {'exited': True, 'exitcode': 0, 'out-data': '{"ok": true}'}])
+    def execute(argv, **kwargs):
+        commands.append(argv)
+        return subprocess.CompletedProcess(argv, 0, json.dumps(next(responses)), '')
+    monkeypatch.setattr(subprocess, 'run', execute)
+    monkeypatch.setattr('time.sleep', lambda seconds: None)
+    assert agent.call(9403, 'stat', path='/a b') == {'ok': True}
+    assert commands[0][:7] == ['qm', 'guest', 'exec', '9403', '--synchronous', '0', '--']
+    assert commands[1] == ['qm', 'guest', 'exec-status', '9403', '12']
+    responses = iter([{'pid': 13}, {'exited': True, 'exitcode': 0, 'out-truncated': True}])
+    with pytest.raises(ValueError, match='truncated'):
+        agent.call(9403, 'stat', path='/x')
+
+
+@pytest.mark.parametrize('name', ['../escape', '/absolute', 'a/../../escape', 'a\\b', 'manifest.json/../escape'])
+def test_archive_traversal_rejected(tmp_path, name):
+    content = io.BytesIO()
+    with zipfile.ZipFile(content, 'w') as archive:
+        archive.writestr(name, 'data')
+    with pytest.raises(ValueError, match='unsafe'):
+        unpack(content.getvalue(), tmp_path / 'out', 10000, lambda n: True)
+
+
+def test_fetch_validates_suite_before_publishing(config, tmp_path):
+    fixture = Path(__file__).parent / 'fixtures/scenarioforge_discovery_suite'
+    archive = tmp_path / 'export.zip'
+    with zipfile.ZipFile(archive, 'w') as bundle:
+        for path in fixture.rglob('*'):
+            if path.is_file():
+                bundle.write(path, path.relative_to(fixture))
+    agent = GuestSimulator(config)
+    backend = ProxmoxBackend(config, {}, agent=agent)
+    result = backend.fetch_suite(str(archive), tmp_path / 'suite')
+    assert result['tasks'] == 1
+    assert all(vmid == 9402 for vmid, _, _ in agent.calls)
+    with zipfile.ZipFile(archive, 'a') as bundle:
+        bundle.writestr('unapproved.txt', 'no')
+    with pytest.raises(ValueError, match='unsafe'):
+        backend.fetch_suite(str(archive), tmp_path / 'invalid')
+    assert not (tmp_path / 'invalid').exists()
+
+
+@pytest.mark.parametrize('kind', ['macos', 'linux', 'windows'])
+def test_placeholders_fail_explicitly(kind):
+    with pytest.raises(ValueError, match='placeholder'):
+        resolve_backend({'type': kind})
+
+
+def test_plan_resolves_guest_paths_without_local_checkout(specification, config):
+    raw = yaml.safe_load(specification.read_text())
+    raw['backend'] = config
+    raw['engine'] = {'path': '/only/in/guest/caf', 'python': '/only/in/guest/venv/bin/python'}
+    specification.write_text(yaml.safe_dump(raw))
+    assert resolve(specification)['engine'] == raw['engine']
+
+
+def test_hooks_run_before_worker(remote_spec, tmp_path):
+    path, backend, agent = remote_spec
+    backend.config['before_trial'] = [{'vmid': 9401, 'argv': ['/opt/lab/reset'], 'timeout_seconds': 60}]
+    run(path, tmp_path / 'results')
+    ops = [op for _, op, _ in agent.calls]
+    assert ops.index('hook') < ops.index('start')
+    assert (tmp_path / 'results/trials/trial-000001/attempt-0001/hook-000.log').read_text().startswith('restored')
+
+
+def test_hook_failure_prevents_all_worker_launches(remote_spec, tmp_path, monkeypatch):
+    path, backend, agent = remote_spec
+    backend.config['before_trial'] = [{'vmid': 9401, 'argv': ['/opt/lab/reset'], 'timeout_seconds': 60}]
+    original = agent.call
+    def fail(vmid, op, **data):
+        result = original(vmid, op, **data)
+        if op == 'hook':
+            result['exitcode'] = 1
+        return result
+    monkeypatch.setattr(agent, 'call', fail)
+    with pytest.raises(PreparationError):
+        run(path, tmp_path / 'results')
+    assert not any(op == 'start' for _, op, _ in agent.calls)
+    assert read_json(tmp_path / 'results/trials/trial-000001/attempt-0001/attempt.json')['status'] == 'preparation_failed'
+
+
+def test_failed_collection_can_be_retried_without_restarting_worker(remote_spec, tmp_path, monkeypatch):
+    path, backend, agent = remote_spec
+    original = backend.collect
+    attempts = 0
+    def fail_once(directory, record):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ValueError('interrupted download')
+        return original(directory, record)
+    monkeypatch.setattr(backend, 'collect', fail_once)
+    output = tmp_path / 'results'
+    rows = run(path, output)
+    assert rows[0]['status'] == 'error'
+    record = read_json(output / 'trials/trial-000001/attempt-0001/transport.json')
+    assert record['stopped'] and not record.get('collected')
+    rows = run(path, output, resume=True)
+    assert rows[0]['flags_observed'] == 1
+    assert len([1 for _, op, _ in agent.calls if op == 'start']) == 2
+
+
+def test_import_suite_preserves_absolute_guest_paths(specification, config, tmp_path):
+    from cyber_agent_flow_eval.scenarioforge import import_config
+    raw = yaml.safe_load(specification.read_text())
+    raw['backend'] = config
+    raw['engine'] = {'path': '/guest/CAF', 'python': '/guest/CAF/venv/bin/python'}
+    raw['execution']['network_policy'] = {'allow': ['*'], 'disallow': []}
+    specification.write_text(yaml.safe_dump(raw))
+    output = tmp_path / 'nested/study.yaml'
+    import_config(Path(__file__).parent / 'fixtures/scenarioforge_discovery_suite', specification, output)
+    assert resolve(output)['engine'] == raw['engine']
+
+
+def test_recover_cli_does_not_require_matching_engine_sources(remote_spec, tmp_path):
+    from cyber_agent_flow_eval.__main__ import main
+    path, backend, agent = remote_spec
+    agent.fail_stop = True
+    output = tmp_path / 'results'
+    with pytest.raises(CleanupError):
+        run(path, output)
+    # A changed engine blocks resume but must not block stopping an old service.
+    engine = Path(backend.engine['path']) / 'mcp_client.py'
+    engine.write_text(engine.read_text() + '\n# engine changed\n')
+    agent.fail_stop = False
+    assert main(['recover', '--config', str(path), '--output', str(output)]) == 0
+    record = read_json(output / 'trials/trial-000001/attempt-0001/transport.json')
+    assert record['stopped'] and record['collected']
+    assert len([1 for _, op, _ in agent.calls if op == 'start']) == 1
+
+
+def test_archive_symlink_and_expansion_limits(tmp_path):
+    content = io.BytesIO()
+    with zipfile.ZipFile(content, 'w') as archive:
+        entry = zipfile.ZipInfo('model_calls/link')
+        entry.external_attr = 0o120777 << 16
+        archive.writestr(entry, '/etc/passwd')
+    with pytest.raises(ValueError, match='unsafe'):
+        unpack(content.getvalue(), tmp_path, 10000, lambda n: True)
+    content = io.BytesIO()
+    with zipfile.ZipFile(content, 'w', zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr('data', 'a' * 1000)
+    with pytest.raises(ValueError, match='Expanded'):
+        unpack(content.getvalue(), tmp_path, 100, lambda n: True)
+
+
+def test_guest_service_uses_user_and_cgroup_deadline(config, tmp_path, monkeypatch):
+    monkeypatch.setattr(guest_agent, 'CONTROL_DIR', tmp_path / 'controls')
+    root = tmp_path / 'run'
+    (root / 'attempt').mkdir(parents=True)
+    for name in ('input.json', 'catalog.json'):
+        (root / 'attempt' / name).write_text('{}')
+    captured = []
+    monkeypatch.setattr(guest_agent, 'command', lambda argv, **kw: captured.append(argv))
+    guest_agent.dispatch({'op': 'start', 'path': str(root), 'unit': 'caf-eval-test', 'seconds': 12,
+                          'user': config['user'], 'engine': {'path': '/opt/CAF with spaces', 'python': '/opt/venv/bin/python'},
+                          'environment_file': '/etc/caf.env'})
+    argv = captured[0]
+    assert '--property=RuntimeMaxSec=12' in argv
+    assert '--property=KillMode=control-group' in argv
+    assert '--property=ExitType=cgroup' in argv
+    assert '--property=EnvironmentFile=/etc/caf.env' in argv
+    assert '--property=User=' + config['user'] in argv
+    assert '--property=WorkingDirectory=/opt/CAF with spaces' in argv
+
+
+def test_delayed_start_cannot_revive_cancelled_service(config, tmp_path, monkeypatch):
+    monkeypatch.setattr(guest_agent, 'CONTROL_DIR', tmp_path / 'controls')
+    monkeypatch.setattr(guest_agent, 'service_status', lambda unit: {'LoadState': 'not-found', 'ActiveState': 'inactive'})
+    guest_agent.dispatch({'op': 'stop', 'unit': 'caf-eval-race'})
+    root = tmp_path / 'run'
+    (root / 'attempt').mkdir(parents=True)
+    for name in ('input.json', 'catalog.json'):
+        (root / 'attempt' / name).write_text('{}')
+    monkeypatch.setattr(guest_agent, 'command', lambda *a, **kw: pytest.fail('Cancelled service started'))
+    with pytest.raises(ValueError, match='cancelled'):
+        guest_agent.dispatch({'op': 'start', 'path': str(root), 'unit': 'caf-eval-race', 'seconds': 10,
+                              'user': config['user'], 'engine': {'path': '/opt/caf', 'python': '/opt/caf/venv/bin/python'}})

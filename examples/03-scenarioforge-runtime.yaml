@@ -1,0 +1,36 @@
+# Runtime TEMPLATE: use fetch-suite + import-suite to supply real tasks/verifiers.
+# This file deliberately has no tasks/suite and cannot be planned/run directly.
+version: 1
+id: example-scenarioforge-template
+backend:
+  type: proxmox
+  participant_vmid: 9403
+  app_vmid: 9402
+  user: participant
+engine:
+  path: /opt/cyber-agent-flow
+  python: /opt/cyber-agent-flow/venv/bin/python
+model:
+  provider: ollama_direct
+  url: http://localhost:11434  # Replace with the endpoint reachable FROM participant-vm.
+  name: llama3
+execution:
+  wall_seconds: 300
+  max_turns: 20
+  tool_timeout: 30
+  progress_seconds: [30, 60, 120, 300]
+  reveal_network_policy: false
+  network_policy:
+    # Example lab subnets; replace with your actual CAF scope.
+    allow: [10.77.0.0/24, 10.78.0.0/24]
+    disallow: [10.78.0.254/32]
+  target_lock: ../eval-runs/locks/examples-lab.lock
+repetitions: 2
+order_seed: 42
+conditions:
+  - id: baseline
+    catalog: catalogs/baseline.json
+    tools: [nmap, curl, python3]
+  - id: added-helper
+    catalog: catalogs/with-http-helper.json
+    tools: [nmap, curl, python3, http_flag_walk]

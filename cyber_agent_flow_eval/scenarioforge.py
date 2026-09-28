@@ -141,7 +141,9 @@ def import_config(package, template, output, max_age_seconds=3600):
     if not isinstance(spec, dict):
         raise ValueError('Configuration template must be a mapping')
     from .engine import resolve_engine
-    spec['engine'] = resolve_engine(spec.get('engine'), template.parent)
+    from .backends import resolve_backend
+    backend = resolve_backend(spec.get('backend', {'type': 'local'}))
+    spec['engine'] = resolve_engine(spec.get('engine'), template.parent, remote=backend['type'] != 'local')
     identifier(snapshot['id'])
     spec['id'] = snapshot['id']
     spec.pop('tasks', None)

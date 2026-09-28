@@ -1,0 +1,22 @@
+{
+  "tools": [
+    {
+      "name": "nmap",
+      "command": "nmap",
+      "allow_args": true,
+      "description": "Inspect in-scope hosts and services. Use bounded scans and explicit targets."
+    },
+    {
+      "name": "curl",
+      "command": "curl",
+      "allow_args": true,
+      "description": "Retrieve content from an in-scope URL. Use explicit URLs and bounded request times."
+    },
+    {
+      "name": "python3",
+      "command": "python3",
+      "allow_args": true,
+      "description": "Run Python 3 code for parsing or in-scope lab operations. Use explicit targets and bounded operations."
+    }
+  ]
+}

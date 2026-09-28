@@ -10,7 +10,7 @@ import sys
 import time
 import psutil
 from importlib.metadata import version, PackageNotFoundError
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,6 +21,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CleanupError(RuntimeError):
+    pass
+
+
+class PreparationError(RuntimeError):
     pass
 
 
@@ -43,6 +47,26 @@ def lease(path):
             fcntl.flock(stream, fcntl.LOCK_UN)
 
 
+class TargetReservation:
+    """Hold the same lab lock across preparation and evaluation in one process."""
+    def __init__(self, path):
+        self.path = Path(path).resolve()
+        self.active = False
+
+    def __enter__(self):
+        self._lease = lease(self.path)
+        self._lease.__enter__()
+        self.active = True
+        return self
+
+    def __exit__(self, *args):
+        self.active = False
+        return self._lease.__exit__(*args)
+
+    def covers(self, path):
+        return self.active and self.path == Path(path).resolve()
+
+
 def source_identity(engine_path):
     # Hash each project's source independently, including dirty checkout contents.
     from .spec import digest
@@ -51,10 +75,12 @@ def source_identity(engine_path):
     for name in ('pyproject.toml', 'requirements.txt'):
         if (ROOT / name).is_file():
             evaluator_files.append(ROOT / name)
-    engine = Path(engine_path)
-    engine_files = [*engine.glob('*.py'), *engine.glob('requirements*.txt')]
-    return {'evaluator': digest({str(p.relative_to(ROOT)): p.read_text() for p in sorted(evaluator_files)}),
-            'engine': digest({str(p.relative_to(engine)): p.read_text() for p in sorted(engine_files)})}
+    result = {'evaluator': digest({str(p.relative_to(ROOT)): p.read_text() for p in sorted(evaluator_files)})}
+    if engine_path is not None:
+        engine = Path(engine_path)
+        engine_files = [*engine.glob('*.py'), *engine.glob('requirements*.txt')]
+        result['engine'] = digest({str(p.relative_to(engine)): p.read_text() for p in sorted(engine_files)})
+    return result
 
 
 def dependencies():
@@ -184,7 +210,8 @@ def export(output):
     temporary.replace(output / 'dataset.jsonl')
     columns = ['experiment_id', 'spec_hash', 'trial_id', 'pair_id', 'task_id', 'family', 'split',
                'scenario_id', 'condition_id', 'artifact_hash', 'repetition', 'attempt', 'status',
-               'verified_success', 'score', 'suite_id', 'package_hash', 'core_session_id', 'readiness_checked_at', 'elapsed_seconds', 'attempt_path']
+               'verified_success', 'score', 'suite_id', 'package_hash', 'core_session_id', 'readiness_checked_at',
+               'elapsed_seconds', 'execution_seconds', 'flags_observed', 'progress_score', 'time_to_first_flag_seconds', 'attempt_path']
     temporary = output / 'dataset.csv.tmp'
     with temporary.open('w', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=columns, extrasaction='ignore')
@@ -194,19 +221,28 @@ def export(output):
     return rows
 
 
-def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch):
+def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch, reservation=None, progress=print):
     spec = resolve(spec_path)
+    from .backends import create_backend
+    from .progress import record_progress
+    backend = create_backend(spec)
     if 'suite_snapshot' in spec:
         from .scenarioforge import require_ready
         require_ready(spec['suite_snapshot'], spec['suite']['max_readiness_age_seconds'])
     output = Path(output).resolve()
     output.mkdir(parents=True, exist_ok=True)
-    with lease(output / '.coordinator.lock'), lease(spec['execution']['target_lock']):
+    if reservation is not None and (not isinstance(reservation, TargetReservation) or not reservation.covers(spec['execution']['target_lock'])):
+        raise ValueError('A live reservation for this target lock is required')
+    target = nullcontext() if reservation is not None else lease(spec['execution']['target_lock'])
+    with lease(output / '.coordinator.lock'), target, (backend.lock() if backend else nullcontext()):
         manifest_path = output / 'manifest.json'
-        identities = source_identity(spec['engine']['path'])
+        identities = source_identity(None if backend else spec['engine']['path'])
+        remote_identity = backend.identities() if backend else None
+        if backend:
+            identities['engine'] = remote_identity['engine']
         identity = digest(identities)
         from .engine import runtime_identity
-        engine_runtime = runtime_identity(spec['engine'])
+        engine_runtime = remote_identity['runtime'] if backend else runtime_identity(spec['engine'])
         if manifest_path.exists():
             if not resume:
                 raise ValueError('Output already contains an experiment; use --resume or a new directory')
@@ -225,6 +261,8 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch)
                         'python': sys.version, 'dependencies': dependencies(),
                         'spec': spec, 'schedule': schedule(spec)}
             write_json(manifest_path, manifest)
+        if backend:
+            backend.recover(output)
         tasks = {t['id']: t for t in spec['tasks']}
         conditions = {c['id']: c for c in spec['conditions']}
         for trial in manifest['schedule']:
@@ -232,8 +270,14 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch)
             existing = sorted(trial_dir.glob('attempt-*/attempt.json'))
             if existing:
                 previous = read_json(existing[-1])
+                if backend:
+                    previous.update(record_progress(existing[-1].parent, tasks[trial['task_id']]['verifier'],
+                                                    spec['execution']['progress_seconds']))
+                    write_json(existing[-1], previous)
                 if previous['status'] == 'running':
                     previous.update(status='interrupted', ended_at=timestamp(), verified_success=None)
+                    previous.update(record_progress(existing[-1].parent, tasks[trial['task_id']]['verifier'],
+                                                    spec['execution']['progress_seconds']))
                     write_json(existing[-1], previous)
                 elif not retry_failed or (previous['status'] == 'completed' and previous.get('verified_success') is True):
                     continue
@@ -248,6 +292,8 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch)
                        artifact_hash=condition['artifact_hash'], model=spec['model'], attempt=number,
                        status='running', started_at=timestamp(), verified_success=None,
                        usage_complete=False, nested_operation_telemetry_complete=False)
+            if 'orchestration' in spec:
+                row['orchestration'] = spec['orchestration']
             if 'suite_snapshot' in spec:
                 snapshot = spec['suite_snapshot']
                 row.update(suite_id=snapshot['id'], package_hash=snapshot['package_hash'],
@@ -258,7 +304,8 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch)
             write_json(directory / 'attempt.json', row)
             write_json(directory / 'catalog.json', condition['catalog_snapshot'])
             # Only participant-facing fields are passed to the engine worker.
-            participant = {'model': spec['model'], 'execution': spec['execution'], 'engine': spec['engine'],
+            participant_execution = {key: value for key, value in spec['execution'].items() if key not in {'target_lock', 'progress_seconds'}}
+            participant = {'model': spec['model'], 'execution': participant_execution, 'engine': spec['engine'],
                            'prompt': task['prompt'], 'tools': condition['tools'],
                            'guidance': '\n\n'.join(g['text'] for g in condition['guidance_snapshot']),
                            'run_id': f'{trial["trial_id"]}-attempt-{number:04d}',
@@ -266,17 +313,25 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch)
             write_json(directory / 'input.json', participant)
             started = time.monotonic()
             try:
-                result = launcher(directory, spec['execution']['wall_seconds'])
+                if backend:
+                    backend.before_trial(directory)
+                execution_started = time.monotonic()
+                result = (backend.launch if backend else launcher)(directory, spec['execution']['wall_seconds'])
                 row.update(result)
+                row.setdefault('execution_seconds', time.monotonic() - execution_started)
                 if result['status'] == 'completed':
                     evaluation = verify(result['final_answer'], task['verifier'])
-                    evaluation['evidence'] = ['result.json', 'messages.json']
+                    prefix = 'guest-output/' if backend else ''
+                    evaluation['evidence'] = [prefix + 'result.json', prefix + 'messages.json']
                     write_json(directory / 'evaluation.json', evaluation)
                     row['verified_success'] = evaluation['passed']
                     if 'score' in evaluation:
                         row['score'] = evaluation['score']
             except CleanupError as exc:
                 row.update(status='cleanup_failed', errors=[str(exc)])
+                raise
+            except PreparationError as exc:
+                row.update(status='preparation_failed', errors=[str(exc)])
                 raise
             except KeyboardInterrupt:
                 row.update(status='interrupted', errors=['Coordinator interrupted'])
@@ -285,7 +340,9 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch)
                 row.update(status='error', errors=[f'{type(exc).__name__}: {exc}'])
             finally:
                 row.update(ended_at=timestamp(), elapsed_seconds=time.monotonic() - started)
+                row.update(record_progress(directory, task['verifier'], spec['execution']['progress_seconds']))
                 write_json(directory / 'attempt.json', row)
                 export(output)
-            print(f'{trial["trial_id"]} attempt {number}: {row["status"]}, success={row["verified_success"]}', flush=True)
+            if progress is not None:
+                progress(f'{trial["trial_id"]} attempt {number}: {row["status"]}, success={row["verified_success"]}')
         return export(output)

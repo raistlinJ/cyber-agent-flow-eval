@@ -11,11 +11,17 @@ from pathlib import Path
 REQUIRED_OPTIONS = {'allowed_tools', 'guidance_text', 'reveal_network_policy'}
 
 
-def resolve_engine(config, base):
+def resolve_engine(config, base, *, remote=False):
     if not isinstance(config, dict) or set(config) - {'path', 'python'} or 'path' not in config:
         raise ValueError('engine requires path and accepts optional python')
     if any(not isinstance(value, str) or not value.strip() for value in config.values()):
         raise ValueError('engine.path and engine.python must be nonempty paths')
+    if remote:
+        from pathlib import PurePosixPath
+        if 'python' not in config or any(not PurePosixPath(v).is_absolute() or '..' in PurePosixPath(v).parts
+                                        or any(c in v for c in '\n\r\0') for v in config.values()):
+            raise ValueError('Remote engine.path and engine.python require absolute guest paths')
+        return dict(config)
     root = (Path(base) / Path(config['path']).expanduser()).resolve()
     for name in ('mcp_client.py', 'mcp_kali.py', 'session_logger.py'):
         if not (root / name).is_file():

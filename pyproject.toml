@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "cyber-agent-flow-eval"
-version = "0.1.0"
+version = "0.4.0"
 readme = "README.md"
 description = "Independent YAML evaluator using a configured CyberAgentFlow checkout"
 requires-python = ">=3.10"

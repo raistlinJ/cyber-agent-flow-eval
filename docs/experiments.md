@@ -18,6 +18,9 @@ between the main application, ScenarioForge and this evaluator.
 
 Install this project as described in [README](../README.md) (Python 3.10+, Linux/macOS).
 Set `engine.path` and `engine.python` in the YAML before planning or running.
+For Proxmox host orchestration, see [the guest-agent backend guide](proxmox.md).
+`backend.type: proxmox` runs workers inside participant-vm and keeps private scoring
+on the host. The default `local` backend retains same-machine execution.
 From the cyber-agent-flow-eval repository root:
 
 ```bash
@@ -81,14 +84,16 @@ a submitted target is permitted; no blind authorization oracle is claimed.
 
 See the complete [example](../configs/experiments/example.yaml). Unknown fields,
 duplicate YAML keys, duplicate task/condition IDs, invalid budgets, and unsupported
-verifier types are rejected. Paths in YAML are relative to the YAML file.
+verifier types are rejected. Host file paths in YAML are relative to the YAML file;
+Proxmox engine paths refer to absolute paths inside participant-vm.
 IDs use letters, digits, underscores, and hyphens, beginning with a letter or digit.
 
 | Field | Meaning |
 | --- | --- |
 | `version` | Must be `1` |
-| `engine.path` | Required CAF checkout directory; absolute or relative to this YAML |
-| `engine.python` | Optional executable path, relative to this YAML; defaults to evaluator Python |
+| `backend` | Optional; defaults to `{type: local}`. Proxmox guest execution is documented separately |
+| `engine.path` | Required CAF checkout directory; YAML-relative for local, absolute guest path for Proxmox |
+| `engine.python` | Local: optional executable path, default evaluator Python. Proxmox: required absolute guest path |
 | `id`, optional `description` | Experiment identity and description |
 | `model.provider` | `ollama_direct`, `openai`, `litellm`, or `claude` |
 | `model.url`, `model.name` | Provider endpoint and model name |
@@ -97,6 +102,7 @@ IDs use letters, digits, underscores, and hyphens, beginning with a letter or di
 | `execution.wall_seconds` | Whole worker deadline including startup, inference, tools, and shutdown |
 | `execution.max_turns` | Engine turn limit; exhaustion is recorded separately |
 | `execution.tool_timeout` | Native tool timeout/checkpoint interval; defaults to 60 |
+| `execution.progress_seconds` | Unique positive checkpoint times for flag progress; defaults to `[60, 300, 600]` |
 | `execution.context_window` | Engine context budget; defaults to 8192 |
 | `execution.network_policy` | Required explicit `allow` and `disallow` lists |
 | `execution.reveal_network_policy` | Boolean, defaults to false; discovery suites require false |
@@ -158,6 +164,13 @@ Each evaluation includes version, definition hash, individual checks, and refere
 to `result.json` and `messages.json`. These initial verifiers assess final answers;
 they do not independently probe live network state. Domain-specific environment
 verifiers remain future work.
+
+Flag tasks additionally get `progress.json`: timestamped observations of expected
+flag strings in tool outputs, model responses, and final answers. This provides
+partial progress, time to first flag, and checkpoint counts even when execution
+times out. It does not change final-answer verification or independently prove an
+exploit. Expected values stay in host-side scoring. See [timing and recovery](proxmox.md#results-timing-and-recovery)
+for evidence limits and the distinction between execution time and orchestration time.
 
 Execution failure produces `verified_success: null`, not an invented negative
 verifier result. A completed but incorrect answer produces `false`. Preserve this
@@ -228,21 +241,29 @@ execution never silently auto-approves. The wall deadline terminates the worker
 process group and tracked descendants. Ctrl-C records interruption and stops the
 active worker. Cleanup is best effort; detached remote processes and persistent
 network effects are outside this runner's control.
+With Proxmox, a guest systemd service instead enforces the worker deadline and
+stops its cgroup; collected files live under `guest-output/`. The host journals the
+service identity and stops unfinished recorded services before resuming.
 
 The target lock coordinates cooperating evaluation runners on the same host. The
 WebUI, ordinary CLI, other hosts, and external operators do not honor it. Reserve
 the target operationally. ScenarioForge import validates historical readiness
-evidence; it does not deploy, probe or reset the network between trials. Use a
+evidence; it has no built-in deployment or CORE reset. Proxmox's optional
+`backend.before_trial` hooks can run explicitly configured reset/readiness scripts
+before each attempt and abort on failure. Use a
 prepared environment and validate restoration before repeating state-changing tasks.
 Process isolation does not establish scenario restoration.
 
-Evaluator definitions are absent from participant inputs, but workers and tools
-currently share the host filesystem and user permissions with the coordinator.
+Evaluator definitions are absent from participant inputs. With the local backend,
+workers and tools share the host filesystem and user permissions with the coordinator.
 **This is not an evaluator security boundary.** Shell-capable tools could read
 experiment files. Use separate evaluator storage/permissions or a sandbox before
 conducting held-out studies with tools that can access those files. Treat raw traces
 as private and review/redact them before publishing a dataset. The included
 no-tools example avoids giving the agent filesystem access.
+The Proxmox backend stages only participant inputs, catalog, and worker source in
+participant-vm; private suite files remain on the host. Shared host mounts or other
+guest permissions can still invalidate that separation.
 
 ## Module boundaries and next steps
 
@@ -438,5 +459,7 @@ participant tools through separate users/permissions or sandboxing for held-out
 studies. Same-user filesystem access can expose answers despite private file modes.
 Flags returned successfully will also appear in raw traces; redact before publishing.
 
-In air-gapped labs, manually transfer the evaluation ZIP from app-vm to participant-vm.
+For local evaluation, manually transfer the evaluation ZIP from app-vm to participant-vm.
+For Proxmox host evaluation, `fetch-suite` retrieves the ZIP through QEMU Guest Agent;
+see [the host workflow](proxmox.md#commands-on-the-proxmox-host).
 CAF requires no live connection to ScenarioForge; target traffic uses HITL.

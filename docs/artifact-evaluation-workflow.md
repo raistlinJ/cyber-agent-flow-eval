@@ -21,7 +21,7 @@ projects/processes do not create a security boundary around same-user files.
 ```mermaid
 flowchart LR
     Main[CAF main application] -->|generate, test, select| Artifacts[Frozen artifacts]
-    SF[ScenarioForge] -->|manually transfer evaluation package| Eval[Separate evaluation CLI]
+    SF[ScenarioForge] -->|evaluation package: manual or host guest-agent transfer| Eval[Separate evaluation CLI]
     Artifacts --> Eval
     Main --> Engine[Shared MCPSession engine and tool modules]
     Eval --> Engine
@@ -42,7 +42,9 @@ through configuration. The diagram below shows the software boundary.
 
 ScenarioForge manages CORE over its management connection. CAF reaches scenario
 targets through HITL. In this lab, app-vm and participant-vm have no direct network
-connection: manually transfer the evaluation ZIP through your approved mechanism.
+connection. For local evaluation, manually transfer the evaluation ZIP through your
+approved mechanism. With the [Proxmox backend](proxmox.md), the host retrieves the ZIP
+from app-vm and stages participant inputs through QEMU Guest Agent without guest IPs.
 CAF does not contact ScenarioForge during evaluation. Configure a separately
 reachable inference endpoint for each application that needs one.
 
@@ -231,7 +233,8 @@ objective IDs. Both support partial scoring. A completed execution is not necess
 a successful task, and a passing tool test is not an efficacy result.
 
 Readiness is timestamped historical evidence, not a live probe before each trial.
-The runner does not reset CORE, automate the development/generation cycle, isolate
+The runner has no built-in CORE reset; Proxmox can invoke explicitly configured
+reset/readiness hooks before each attempt. It does not automate the development/generation cycle, isolate
 evaluator files from same-user tools, aggregate paired statistical results, or fully
 account for work inside generated tools. Reserve the lab, validate restoration for
 state-changing tasks, and use separate storage/permissions or sandboxing when strict
@@ -252,3 +255,13 @@ Artifact generation, container-test and UI regression tests stay in the main CAF
 repository. Run them there following its [artifact test documentation](../../cyber-agent-flow/docs/generated-tool-testing.md)
 and [generation documentation](../../cyber-agent-flow/docs/claude-generation.md).
 No repository test establishes artifact efficacy against a live CORE scenario.
+
+## Optional host workflow owner
+
+[`cyber-agent-flow-orchestrator`](../../cyber-agent-flow-orchestrator/README.md)
+owns the enclosing ScenarioForge/preparation/evaluation sequence. It can deploy a
+saved scenario with an evaluation export or reuse an existing export, run configured
+artifact-generation and test commands, collect condition catalogs/guidance, and
+call this evaluator. The evaluator keeps its independent CLI and Proxmox trial
+backend. CAF's engine and artifact APIs remain in the main application. See the
+orchestrator examples for YAML workflows, resume, recovery, and limitations.

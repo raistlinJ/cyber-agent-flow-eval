@@ -22,13 +22,14 @@ def plain(value):
 
 class RecordingClient:
     """Capture every engine model call, including summarization and retries."""
-    def __init__(self, client, directory):
+    def __init__(self, client, directory, origin=None):
         self.client = client
         self.directory = Path(directory)
         self.count = 0
         self.lock = threading.Lock()
         self.records = []
         self.storage_errors = []
+        self.origin = time.monotonic() if origin is None else origin
 
     def __getattr__(self, name):
         return getattr(self.client, name)
@@ -57,18 +58,21 @@ class RecordingClient:
             raise
         finally:
             record['elapsed_seconds'] = time.monotonic() - started
+            record['observed_seconds'] = time.monotonic() - self.origin
             self.save(path, record)
             self.records.append(record)
 
 
 async def execute(config, directory):
     directory = Path(directory)
+    started = time.monotonic()
     cancel = asyncio.Event()
     events, errors = [], []
     interaction = False
 
     def on_event(event):
         nonlocal interaction
+        event = dict(event, _eval_elapsed_seconds=time.monotonic() - started)
         events.append(plain(event))
         # _emit suppresses callback errors, so retain them and fail the result.
         try:
@@ -101,12 +105,11 @@ async def execute(config, directory):
         guidance_text=config['guidance'], reveal_network_policy=limits.get('reveal_network_policy', False),
     )
     recorder = None
-    started = time.monotonic()
     status = 'completed'
     try:
         await session.start()
         write_json(directory / 'checkpoint.json', plain(session.messages))
-        recorder = RecordingClient(session._client, directory / 'model_calls')
+        recorder = RecordingClient(session._client, directory / 'model_calls', origin=started)
         session._client = recorder
         await session.chat(config['prompt'], cancel_event=cancel)
         if interaction:
