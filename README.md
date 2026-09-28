@@ -17,11 +17,13 @@ and calls this evaluator. The evaluator remains usable standalone and owns trial
 scheduling, workers, scoring and dataset export. In Proxmox mode both coordinators
 run on the host; only the thin worker and CAF engine run inside participant-vm.
 
-The figure below shows the evaluator execution layer. The
+The figure below shows the current host orchestration and evaluator architecture. The
 [orchestrator architecture and examples](../cyber-agent-flow-orchestrator/README.md)
 show the enclosing lab workflow.
 
 ![ScenarioForge and CyberAgentFlow host evaluation](scenarioforge_cyber-agent-flow.png)
+
+![Orchestrated evaluation: conditions, trials, private scoring and results](scenarioforge_cyber-agent-flow-eval.png)
 
 Start with the [three simple experiments](examples/README.md): a no-tools smoke
 test, controlled tools versus one added helper, and a ScenarioForge challenge suite.

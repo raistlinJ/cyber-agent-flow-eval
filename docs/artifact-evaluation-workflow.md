@@ -28,8 +28,12 @@ flowchart LR
     Eval --> Data[Trial records and datasets]
 ```
 
-The evaluator is a separate project on participant-vm; it selects the CAF checkout
-through configuration. The diagram below shows the software boundary.
+The evaluator is a separate project and selects the CAF checkout through
+configuration. With the Proxmox orchestrator, its coordinator runs on the host;
+only a thin worker and the shared CAF engine run in participant-vm. Standalone
+local evaluation can instead run the evaluator alongside CAF in the participant.
+See the [host architecture](../scenarioforge_cyber-agent-flow.png) and
+[evaluation flow](../scenarioforge_cyber-agent-flow-eval.png).
 
 ## Where each component runs
 
@@ -38,7 +42,9 @@ through configuration. The diagram below shows the software boundary.
 | ScenarioForge on app-vm | Author and deploy scenarios; generate clues, guides and attack graphs; export tasks, private answers and readiness evidence |
 | CORE on corevm | Run the scenario hosts, services, flags, routes and pivots |
 | CAF main application on participant-vm / Kali | Interactive teaming, analysis, artifact generation, repair and tests |
-| Separate evaluation CLI on participant-vm / Kali | Read evaluation YAML and frozen artifacts; run the shared engine; score and export attempts |
+| Orchestrator on Proxmox host | Run the configured lab workflow, retrieve exports, prepare artifacts, monitor and expose results |
+| Evaluator coordinator on Proxmox host | Read evaluation YAML and fixed condition inputs; schedule trials, privately score and export attempts |
+| Thin evaluation worker on participant-vm / Kali | Run the shared CAF engine with the selected catalog/guidance and return trial evidence |
 
 ScenarioForge manages CORE over its management connection. CAF reaches scenario
 targets through HITL. In this lab, app-vm and participant-vm have no direct network
