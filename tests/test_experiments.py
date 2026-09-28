@@ -144,11 +144,13 @@ def test_real_worker_with_fake_provider(specification, tmp_path, relocate_engine
     thread.start()
     try:
         raw = yaml.safe_load(specification.read_text())
+        catalog = CAF_ROOT / 'kali_tools.default.json'
+        if not catalog.exists(): catalog = CAF_ROOT / 'kali_tools.json'
         if relocate_engine:
             import shutil
             selected = tmp_path / 'different CAF checkout with spaces'
             selected.mkdir()
-            for file in [*CAF_ROOT.glob('*.py'), CAF_ROOT / 'kali_tools.json']:
+            for file in [*CAF_ROOT.glob('*.py'), catalog]:
                 shutil.copy2(file, selected / file.name)
             client = selected / 'mcp_client.py'
             client.write_text(client.read_text().replace('You are a network security assistant.',
@@ -157,7 +159,7 @@ def test_real_worker_with_fake_provider(specification, tmp_path, relocate_engine
         raw['model'] = {'provider': 'openai', 'url': f'http://127.0.0.1:{server.server_port}', 'name': 'test'}
         raw['execution']['network_policy'] = {'allow': ['10.88.0.0/16'], 'disallow': ['10.88.99.0/24']}
         specification.write_text(yaml.safe_dump(raw))
-        original_catalog = (CAF_ROOT / 'kali_tools.json').read_bytes()
+        original_catalog = catalog.read_bytes()
         rows = run(specification, tmp_path / 'output')
         assert all(r['status'] == 'completed' and r['verified_success'] for r in rows), rows
         assert len(requests) == 2
@@ -166,7 +168,7 @@ def test_real_worker_with_fake_provider(specification, tmp_path, relocate_engine
         assert '10.88.' not in json.dumps(requests)
         assert 'Allowed targets:' not in json.dumps(requests)
         assert all('tools' not in request for request in requests)
-        assert (CAF_ROOT / 'kali_tools.json').read_bytes() == original_catalog
+        assert catalog.read_bytes() == original_catalog
         for row in rows:
             directory = tmp_path / 'output' / row['attempt_path']
             checkpoint = read_json(directory / 'checkpoint.json')

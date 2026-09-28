@@ -7,7 +7,8 @@ The main tool handles interactive sessions, analysis, generation and artifact te
 the evaluator consumes prepared tasks and selected artifacts. It reuses the existing
 `MCPSession` engine in a fresh worker process
 for each attempt. It does not import Flask, automate the WebUI, or change the
-repository's `kali_tools.json`. This is the first evaluation foundation described
+repository's shipped tool catalog (`kali_tools.default.json`) or optional local
+`kali_tools.json`. This is the first evaluation foundation described
 in [the research plan](../../cyber-agent-flow/experiment-ideas/generated-artifact-evaluation-research-plan.md).
 It supports supplied-evidence studies and ScenarioForge packages, including explicit
 discovery tasks. Deployment, restoration and artifact generation remain separate.
