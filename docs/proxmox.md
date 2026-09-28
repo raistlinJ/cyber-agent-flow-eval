@@ -169,6 +169,36 @@ Planning is offline: it validates guest path syntax without reading host paths a
 guest files. `check-backend` and run startup inspect the actual selected guest CAF
 source, evaluation controls, account, Python runtime and package versions.
 
+### CAF engine lacks evaluation controls
+
+This means the probe read the CAF source at `engine.path` **inside the selected
+participant VM**, but its `MCPSession` constructor lacks one or more of
+`allowed_tools`, `guidance_text`, and `reveal_network_policy`. No evaluation trial
+has started. The controls are included in CAF commit `8d262fd` and current `main`.
+
+Check that the selected participant VM and guest paths are correct. In that VM,
+open the configured CAF checkout (the provisioning default is
+`/opt/cyber-agent-flow`) as its owning account, and run:
+
+```bash
+git status --short
+git branch --show-current
+git log -1 --oneline
+git pull --ff-only
+```
+
+Keep any local changes; do not reset the checkout to make an update succeed. If
+it tracks a custom branch or pinned revision, bring in the evaluation controls
+there or point `engine.path` and `engine.python` to a compatible checkout and its
+Python environment. Restart the orchestrator after changing its runtime config,
+then start a fresh sample. The error now reports the guest path and exact missing
+controls to distinguish an old checkout from a wrong path.
+
+Updating the host orchestrator or host evaluator, installing an evaluator copy
+inside the VM, or running host `uv sync` cannot add these controls to the guest
+CAF source. The compatibility check is required for controlled tool selection,
+guidance and hidden network-policy handling; do not bypass it.
+
 ## Resets and readiness
 
 No reset command is inferred or run by default. Configure explicit **guest argv

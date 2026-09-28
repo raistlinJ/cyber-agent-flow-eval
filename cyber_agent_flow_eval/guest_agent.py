@@ -67,11 +67,20 @@ def dispatch(data):
         for name in ('mcp_client.py', 'mcp_kali.py', 'session_logger.py'):
             if not (root / name).is_file():
                 raise ValueError(f'Missing CAF file: {name}')
-        tree = ast.parse((root / 'mcp_client.py').read_text())
-        session = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'MCPSession')
-        init = next(n for n in session.body if isinstance(n, ast.FunctionDef) and n.name == '__init__')
-        if not {'allowed_tools', 'guidance_text', 'reveal_network_policy'} <= {a.arg for a in [*init.args.args, *init.args.kwonlyargs]}:
-            raise ValueError('CAF engine lacks evaluation controls')
+        try:
+            tree = ast.parse((root / 'mcp_client.py').read_text())
+            session = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'MCPSession')
+            init = next(n for n in session.body if isinstance(n, ast.FunctionDef) and n.name == '__init__')
+        except (SyntaxError, StopIteration) as exc:
+            raise ValueError(f'Cannot find a compatible MCPSession in guest engine.path={root}; '
+                             'check the configured cyber-agent-flow checkout inside the participant VM') from exc
+        missing = {'allowed_tools', 'guidance_text', 'reveal_network_policy'} - {a.arg for a in [*init.args.args, *init.args.kwonlyargs]}
+        if missing:
+            raise ValueError(f'CAF engine lacks evaluation controls at guest engine.path={root}: '
+                             f'MCPSession.__init__ is missing {", ".join(sorted(missing))}. '
+                             'Update this cyber-agent-flow checkout inside the participant VM, or correct engine.path '
+                             'and engine.python in the host runtime config. Updating the host orchestrator/evaluator '
+                             'does not update the guest engine.')
         files = [*root.glob('*.py'), *root.glob('requirements*.txt')]
         source = {str(p.relative_to(root)): p.read_text() for p in sorted(files)}
         runtime_script = '''import sys, json

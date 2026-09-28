@@ -36,8 +36,11 @@ def resolve_engine(config, base, *, remote=False):
         session = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'MCPSession')
         init = next(n for n in session.body if isinstance(n, ast.FunctionDef) and n.name == '__init__')
         options = {arg.arg for arg in [*init.args.args, *init.args.kwonlyargs]}
-        if not REQUIRED_OPTIONS <= options:
-            raise ValueError('CAF engine lacks evaluation controls; update the configured checkout')
+        missing = REQUIRED_OPTIONS - options
+        if missing:
+            raise ValueError(f'CAF engine lacks evaluation controls at engine.path={root}: '
+                             f'MCPSession.__init__ is missing {", ".join(sorted(missing))}; '
+                             'update this cyber-agent-flow checkout or correct engine.path and engine.python')
     except (SyntaxError, StopIteration) as exc:
         raise ValueError('Cannot find a compatible MCPSession in engine.path') from exc
     return {'path': str(root), 'python': executable}

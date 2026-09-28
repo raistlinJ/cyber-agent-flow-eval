@@ -31,8 +31,37 @@ def test_engine_validation_preserves_python_symlink(engine_copy, tmp_path):
     result = resolve_engine({'path': 'configured engine', 'python': 'selected-python'}, tmp_path)
     assert result == {'path': str(engine_copy), 'python': str(link)}
     (engine_copy / 'mcp_client.py').write_text('class MCPSession:\n    def __init__(self): pass\n')
-    with pytest.raises(ValueError, match='evaluation controls'):
+    with pytest.raises(ValueError, match='evaluation controls') as failure:
         resolve_engine({'path': str(engine_copy)}, tmp_path)
+    assert str(engine_copy) in str(failure.value)
+    assert 'allowed_tools, guidance_text, reveal_network_policy' in str(failure.value)
+
+
+@pytest.mark.parametrize('options,missing', [
+    ('', 'allowed_tools, guidance_text, reveal_network_policy'),
+    (', *, allowed_tools=None, guidance_text=None', 'reveal_network_policy'),
+    (', *, allowed_tools=None, guidance_text=None, reveal_network_policy=True', None),
+])
+def test_guest_probe_reports_configured_path_and_missing_controls(engine_copy, monkeypatch, options, missing):
+    from cyber_agent_flow_eval import guest_agent
+    # Probe must parse the actual guest source, not import it or inspect host CAF.
+    (engine_copy / 'mcp_client.py').write_text(
+        f'class MCPSession:\n    def __init__(self{options}): pass\n'
+        'raise RuntimeError("Engine must not be imported")\n')
+    def command(argv, **kwargs):
+        assert missing is None, 'Incompatible engine must fail before runtime/guest commands'
+        return '250' if argv[0] == 'systemctl' else '{"dependencies": {}}'
+    monkeypatch.setattr(guest_agent, 'command', command)
+    data = {'op': 'probe', 'engine': {'path': str(engine_copy), 'python': sys.executable}}
+    if missing:
+        with pytest.raises(ValueError, match='evaluation controls') as failure:
+            guest_agent.dispatch(data)
+        message = str(failure.value)
+        assert f'guest engine.path={engine_copy}' in message
+        assert f'is missing {missing}.' in message
+        assert 'inside the participant VM' in message
+    else:
+        assert len(guest_agent.dispatch(data)['engine']) == 64
 
 
 @pytest.mark.parametrize('settings', [{}, {'path': ''}, {'path': 'missing'}, {'path': 'configured engine', 'python': 'absent'},
