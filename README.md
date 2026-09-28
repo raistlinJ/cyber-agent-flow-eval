@@ -366,3 +366,22 @@ each `GuestAgent`; the guard runs before every `qm` subprocess, including transf
 chunks and exec-status polling. The orchestrator uses it to recheck PVE user/VM
 access. Standalone evaluator calls remain trusted host/local CLI operations unless
 the caller explicitly supplies this context. No PVE ticket is staged into a guest.
+
+Version 0.4.2 optimizes Proxmox uploads: 512 KiB chunks go through
+`qm guest exec --pass-stdin`, with a short synchronous wait for each write. If
+the write is still running, the existing PID is polled without retransmitting
+the chunk. The base64 JSON request stays below the documented 1 MiB stdin limit
+and payloads are not passed as command-line arguments. The final guest file size
+and SHA-256 must match before the transfer succeeds. Downloads remain at 16 KiB
+to respect QGA's captured-output limit. Authorization callbacks still run before
+every host `qm` invocation, including each write and any fallback status poll.
+
+For a 3,213,005-byte bundle, seven writes plus the final checksum require nine
+host invocations when writes finish synchronously, compared with at least 396
+previously. Local integration tests run the actual Python guest helper with
+simulated `qm` transport; live Proxmox timing is not yet measured. Update the host
+evaluator checkout and restart its caller to use this path. There is no additional
+guest install, network connection or persistent daemon.
+
+See [Proxmox's `qm guest exec` documentation](https://github.com/proxmox/pve-docs/blob/master/generated/qm.1-synopsis.adoc)
+for stdin and synchronous-execution limits.

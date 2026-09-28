@@ -15,7 +15,7 @@ import yaml
 from cyber_agent_flow_eval import backends, guest_agent
 from cyber_agent_flow_eval.backends import resolve_backend
 from cyber_agent_flow_eval.engine import runtime_identity
-from cyber_agent_flow_eval.proxmox import CHUNK, GuestAgent, ProxmoxBackend, unpack
+from cyber_agent_flow_eval.proxmox import CHUNK, UPLOAD_CHUNK, GuestAgent, ProxmoxBackend, unpack
 from cyber_agent_flow_eval.runner import CleanupError, PreparationError, run, source_identity
 from cyber_agent_flow_eval.spec import resolve
 from cyber_agent_flow_eval.storage import read_json, write_json
@@ -149,7 +149,7 @@ def test_unconfirmed_cleanup_aborts_remaining_trials(remote_spec, tmp_path):
 
 def test_binary_chunk_transfer_and_integrity(config, tmp_path):
     agent = GuestSimulator(config)
-    content = os.urandom(CHUNK * 3 + 7)
+    content = os.urandom(UPLOAD_CHUNK * 3 + 7)
     path = str(tmp_path / "file with ' quotes and spaces")
     agent.put(9403, path, content)
     assert agent.get(9403, path) == content
@@ -186,6 +186,79 @@ def test_qm_uses_argv_async_polling_and_checks_truncation(config, monkeypatch):
     responses = iter([{'pid': 13}, {'exited': True, 'exitcode': 0, 'out-truncated': True}])
     with pytest.raises(ValueError, match='truncated'):
         agent.call(9403, 'stat', path='/x')
+
+
+@pytest.mark.parametrize('size', [0, 3213005])
+def test_stdin_upload_runs_real_helper_with_bounded_input_and_fewer_dispatches(config, tmp_path, monkeypatch, size):
+    original_run = subprocess.run
+    commands, guards, results = [], [], {}
+    agent = GuestAgent(config, authorize=lambda args: guards.append(list(args)))
+    def execute(argv, **kwargs):
+        commands.append(argv)
+        if argv[2] == 'exec':
+            command = argv[argv.index('--') + 1:]
+            payload = kwargs.get('input')
+            if payload is not None:
+                assert '--pass-stdin' in argv and '--synchronous' in argv
+                assert len(payload.encode()) < 1024 * 1024
+                assert all(len(arg.encode()) < 128 * 1024 for arg in argv)
+                assert '"content"' not in ' '.join(argv)  # File bytes are not argv.
+            result = original_run(command, input=payload, text=True, capture_output=True)
+            status = dict(exited=True, exitcode=result.returncode, **{'out-data': result.stdout, 'err-data': result.stderr})
+            if payload is not None:
+                reply = status
+            else:
+                results[17] = status
+                reply = {'pid': 17}
+        else:
+            reply = results[int(argv[-1])]
+        return subprocess.CompletedProcess(argv, 0, json.dumps(reply), '')
+    monkeypatch.setattr(subprocess, 'run', execute)
+    destination = tmp_path / "binary ' file"
+    content = os.urandom(size)
+    agent.put(9403, str(destination), content)
+    assert destination.read_bytes() == content
+    writes = max(1, (size + UPLOAD_CHUNK - 1) // UPLOAD_CHUNK)
+    assert len(commands) == writes + 2  # One completed exec/write, then stat + status.
+    assert len(guards) == len(commands)
+    assert len([cmd for cmd in commands if '--pass-stdin' in cmd]) == writes
+
+
+def test_upload_waits_for_existing_pid_without_replaying_write(config, monkeypatch):
+    commands = []
+    replies = iter([{'pid': 12}, {'exited': False}, {'exited': True, 'exitcode': 0, 'out-data': '{}'}])
+    def execute(argv, **kwargs):
+        commands.append(argv)
+        return subprocess.CompletedProcess(argv, 0, json.dumps(next(replies)), '')
+    monkeypatch.setattr(subprocess, 'run', execute)
+    monkeypatch.setattr('time.sleep', lambda seconds: None)
+    assert GuestAgent(config).call(9403, 'write', path='/x', offset=0, content='YQ==') == {}
+    assert [cmd[2] for cmd in commands] == ['exec', 'exec-status', 'exec-status']
+
+
+@pytest.mark.parametrize('result,match', [
+    ({'exited': True, 'exitcode': 1, 'out-data': '{"error":"disk full"}'}, 'disk full'),
+    ({'exited': True, 'exitcode': 0, 'out-truncated': True}, 'truncated'),
+    ({'exited': True, 'exitcode': 0, 'out-data': 'bad'}, 'invalid JSON'),
+    ({'pid': True}, 'PID')])
+def test_upload_rejects_failed_or_ambiguous_completion(config, monkeypatch, result, match):
+    monkeypatch.setattr(subprocess, 'run', lambda argv, **kwargs: subprocess.CompletedProcess(argv, 0, json.dumps(result), ''))
+    with pytest.raises(ValueError, match=match):
+        GuestAgent(config).call(9403, 'write', path='/x', offset=0, content='YQ==')
+
+
+def test_upload_revocation_stops_before_next_chunk(config, monkeypatch):
+    dispatched = []
+    def authorize(args):
+        if dispatched:
+            raise PermissionError('Revoked')
+    def execute(argv, **kwargs):
+        dispatched.append(argv)
+        return subprocess.CompletedProcess(argv, 0, json.dumps({'exited': True, 'exitcode': 0, 'out-data': '{}'}), '')
+    monkeypatch.setattr(subprocess, 'run', execute)
+    with pytest.raises(PermissionError, match='Revoked'):
+        GuestAgent(config, authorize=authorize).put(9403, '/x', b'a' * (UPLOAD_CHUNK + 1))
+    assert len(dispatched) == 1
 
 
 @pytest.mark.parametrize('name', ['../escape', '/absolute', 'a/../../escape', 'a\\b', 'manifest.json/../escape'])

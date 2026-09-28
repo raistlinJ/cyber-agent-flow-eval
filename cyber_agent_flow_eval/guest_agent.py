@@ -24,6 +24,7 @@ OUTPUT_FILES = {'result.json', 'messages.json', 'checkpoint.json', 'events.jsonl
 CONTROL_DIR = Path('/run/cyber-agent-flow-eval')
 MAINTENANCE_LOCK = Path('/run/caf-application-maintenance.lock')
 MAINTENANCE_PENDING = Path('/var/lib/caf-application-maintenance.pending')
+RPC_INPUT_LIMIT = 1024 * 1024
 
 
 def command(argv, timeout=20, allow_failure=False):
@@ -259,7 +260,11 @@ def dispatch(data):
 
 if __name__ == '__main__':
     try:
-        print(json.dumps(dispatch(json.loads(sys.argv[1]))))
+        # Upload requests arrive on stdin to avoid OS argument-size limits.
+        request = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read(RPC_INPUT_LIMIT + 1)
+        if len(request.encode()) > RPC_INPUT_LIMIT:
+            raise ValueError('Guest RPC exceeds input limit')
+        print(json.dumps(dispatch(json.loads(request))))
     except Exception as exc:
         print(json.dumps({'error': f'{type(exc).__name__}: {exc}'}))
         sys.exit(1)

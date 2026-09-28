@@ -17,6 +17,7 @@ from . import guest_agent
 from .storage import read_json, write_json
 
 CHUNK = 16 * 1024  # Base64 output stays well below QGA's captured-output limit.
+UPLOAD_CHUNK = 512 * 1024  # Base64 JSON stays below qm --pass-stdin's 1 MiB limit.
 
 
 _authorization = ContextVar('proxmox_authorization', default=None)
@@ -38,12 +39,12 @@ class GuestAgent:
         self.config = config
         self.script = Path(guest_agent.__file__).read_text()
 
-    def qm(self, args):
+    def qm(self, args, *, input_data=None):
         if self.authorize:
             self.authorize(args)
         try:
             result = subprocess.run(['qm', *map(str, args)], capture_output=True, text=True,
-                                    timeout=self.config['command_timeout'])
+                                    input=input_data, timeout=self.config['command_timeout'])
         except (OSError, subprocess.TimeoutExpired) as exc:
             raise ValueError(f'Proxmox qm unavailable or timed out: {exc}') from exc
         if result.returncode:
@@ -56,12 +57,22 @@ class GuestAgent:
     def call(self, vmid, op, *, timeout=None, **data):
         timeout = timeout or self.config['command_timeout']
         deadline = time.monotonic() + timeout
-        result = self.qm(['guest', 'exec', vmid, '--synchronous', '0', '--',
-                          self.config['guest_python'], '-c', self.script, json.dumps(dict(data, op=op))])
-        if type(result.get('pid')) is not int:
+        payload = json.dumps(dict(data, op=op))
+        if op == 'write':
+            if len(payload.encode()) > 1024 * 1024:
+                raise ValueError('Upload RPC exceeds qm stdin limit')
+            # A completed small write normally needs one qm process instead of
+            # exec plus exec-status. If still running, poll its PID; never resend.
+            result = self.qm(['guest', 'exec', vmid, '--pass-stdin', '1', '--synchronous', '1',
+                              '--timeout', str(min(5, max(1, int(timeout) // 2))), '--',
+                              self.config['guest_python'], '-c', self.script], input_data=payload)
+        else:
+            result = self.qm(['guest', 'exec', vmid, '--synchronous', '0', '--',
+                              self.config['guest_python'], '-c', self.script, payload])
+        if not result.get('exited') and type(result.get('pid')) is not int:
             raise ValueError('Guest agent did not return an execution PID')
+        status = result
         while True:
-            status = self.qm(['guest', 'exec-status', vmid, result['pid']])
             if status.get('exited'):
                 if status.get('out-truncated') or status.get('err-truncated'):
                     raise ValueError('Guest agent truncated command output')
@@ -73,14 +84,16 @@ class GuestAgent:
                     raise ValueError(f'Guest operation {op} returned invalid JSON') from exc
             if time.monotonic() >= deadline:
                 raise ValueError(f'Guest operation {op} timed out; guest PID {result["pid"]}')
-            time.sleep(min(self.config['poll_seconds'], max(0, deadline - time.monotonic())))
+            if status is not result:
+                time.sleep(min(self.config['poll_seconds'], max(0, deadline - time.monotonic())))
+            status = self.qm(['guest', 'exec-status', vmid, result['pid']])
 
     def put(self, vmid, path, content):
         if len(content) > self.config['max_transfer_bytes']:
             raise ValueError('Upload exceeds max_transfer_bytes')
-        for offset in range(0, max(1, len(content)), CHUNK):
+        for offset in range(0, max(1, len(content)), UPLOAD_CHUNK):
             self.call(vmid, 'write', path=path, offset=offset,
-                      content=base64.b64encode(content[offset:offset + CHUNK]).decode())
+                      content=base64.b64encode(content[offset:offset + UPLOAD_CHUNK]).decode())
         identity = self.call(vmid, 'stat', path=path, limit=self.config['max_transfer_bytes'])
         if identity != {'size': len(content), 'sha256': hashlib.sha256(content).hexdigest()}:
             raise ValueError('Guest upload checksum mismatch')
