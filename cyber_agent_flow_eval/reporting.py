@@ -47,6 +47,9 @@ def attempts(output, *, all_attempts=False):
     rows = []
     for path in sorted(root.glob('trials/*/attempt-*/attempt.json')):
         row = read_json(within(root, path))
+        from .hints import metrics
+        if within(root, path.parent / 'assistance.json').is_file():
+            row.update(metrics(path.parent, True, row.get('verified_success')))
         row['attempt_path'] = str(path.parent.relative_to(root))
         rows.append(row)
     rows.sort(key=lambda r: (r['trial_id'], int(r['attempt'])))
@@ -67,6 +70,10 @@ def summarize(rows):
     passed = sum(r['verified_success'] for r in verified)
     return {'trials_observed': len(rows), 'status_counts': dict(Counter(r['status'] for r in rows)),
             'verified_trials': len(verified), 'verified_successes': passed,
+            'assisted_successes': sum(bool(r.get('assisted_success')) for r in verified),
+            'unassisted_successes': sum(bool(r.get('unassisted_success', r['verified_success'] and not r.get('hints_released')) ) for r in verified),
+            'hints_released': sum(r.get('hints_released', 0) for r in rows),
+            'facts_revealed': sum(r.get('facts_revealed', 0) for r in rows),
             'success_rate': passed / len(verified) if verified else None,
             'mean_score': mean(completed, 'score'),
             'mean_execution_seconds': mean(rows, 'execution_seconds'),
@@ -146,7 +153,7 @@ def write_export(directory, report):
         for row in rows:
             stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + '\n')
     columns = ['experiment_id', 'trial_id', 'condition_id', 'task_id', 'repetition', 'attempt', 'status',
-               'verified_success', 'score', 'execution_seconds', 'elapsed_seconds', 'progress_score',
+               'verified_success', 'provide_progressive_hints', 'hints_released', 'facts_revealed', 'assisted_success', 'unassisted_success', 'score', 'execution_seconds', 'elapsed_seconds', 'progress_score',
                'time_to_first_flag_seconds', 'artifact_hash', 'spec_hash', 'attempt_path']
     with (directory / 'dataset.csv').open('x', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=columns, extrasaction='ignore')

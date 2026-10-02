@@ -65,6 +65,31 @@ def service_control(data):
 
 def _dispatch(data):
     op = data['op']
+    if op == 'hint_request':
+        path = Path(data['path']) / 'hint-request.json'
+        if not path.exists():
+            return None
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, 'rb') as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                raise ValueError('Hint request must be a regular file')
+            content = stream.read(4001)
+        if len(content) > 4000:
+            raise ValueError('Hint request too large')
+        return json.loads(content)
+    if op == 'hint_reply':
+        root = Path(data['path'])
+        # Atomic root-owned reply; only released assistance reaches the worker.
+        fd, temporary = tempfile.mkstemp(prefix='.hint-', dir=root)
+        try:
+            with os.fdopen(fd, 'w') as stream:
+                json.dump(data['response'], stream)
+            os.chmod(temporary, 0o644)
+            os.replace(temporary, root / 'hint-response.json')
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        return {'ok': True}
     if op == 'probe':
         root = Path(data['engine']['path'])
         for name in ('mcp_client.py', 'mcp_kali.py', 'session_logger.py'):

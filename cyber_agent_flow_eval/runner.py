@@ -174,7 +174,7 @@ def stop_group(process):
         raise CleanupError('Trial processes survived termination; inspect target before resuming')
 
 
-def launch(directory, seconds):
+def launch(directory, seconds, hint_controller=None):
     engine = read_json(directory / 'input.json')['engine']
     env = dict(os.environ, CAF_RUN_BASE_DIR=str(directory),
                CAF_TOOLS_CONFIG_PATH=str(directory / 'catalog.json'))
@@ -182,7 +182,18 @@ def launch(directory, seconds):
         process = subprocess.Popen([engine['python'], str(Path(__file__).with_name('worker.py')), str(directory)],
                                    cwd=engine['path'], env=env, stdout=log, stderr=log, start_new_session=True)
         try:
-            code = process.wait(timeout=seconds)
+            deadline = time.monotonic() + seconds
+            while process.poll() is None:
+                if hint_controller:
+                    hint_controller.poll()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(process.args, seconds)
+                try:
+                    process.wait(timeout=min(.1, remaining))
+                except subprocess.TimeoutExpired:
+                    pass
+            code = process.returncode
         except subprocess.TimeoutExpired:
             stop_group(process)
             return {'status': 'timeout', 'final_answer': None, 'errors': ['Wall-clock budget exceeded']}
@@ -199,6 +210,9 @@ def export(output):
     rows = []
     for path in sorted(output.glob('trials/*/attempt-*/attempt.json')):
         row = read_json(path)
+        from .hints import metrics
+        if (path.parent / 'assistance.json').is_file():
+            row.update(metrics(path.parent, True, row.get('verified_success')))
         row['attempt_path'] = str(path.parent.relative_to(output))
         rows.append(row)
     # Nested JSONL is the authoritative dataset; CSV is a flat summary.
@@ -210,7 +224,7 @@ def export(output):
     temporary.replace(output / 'dataset.jsonl')
     columns = ['experiment_id', 'spec_hash', 'trial_id', 'pair_id', 'task_id', 'family', 'split',
                'scenario_id', 'condition_id', 'artifact_hash', 'repetition', 'attempt', 'status',
-               'verified_success', 'score', 'suite_id', 'package_hash', 'core_session_id', 'readiness_checked_at',
+               'verified_success', 'provide_progressive_hints', 'hints_released', 'facts_revealed', 'assisted_success', 'unassisted_success', 'score', 'suite_id', 'package_hash', 'core_session_id', 'readiness_checked_at',
                'elapsed_seconds', 'execution_seconds', 'flags_observed', 'progress_score', 'time_to_first_flag_seconds', 'attempt_path']
     temporary = output / 'dataset.csv.tmp'
     with temporary.open('w', newline='') as stream:
@@ -256,7 +270,9 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
                 raise ValueError('Cannot resume without manifest.json')
             if any(p.name != '.coordinator.lock' for p in output.iterdir()):
                 raise ValueError('New experiment requires an empty output directory')
-            manifest = {'version': 1, 'created_at': timestamp(), 'spec_hash': digest(spec),
+            from .hints import POLICY
+            manifest = {'progressive_hint_policy': dict(POLICY) if spec['execution'].get('provide_progressive_hints') else None,
+                        'version': 1, 'created_at': timestamp(), 'spec_hash': digest(spec),
                         'source_hash': identity, 'source_hashes': identities, 'engine_runtime': engine_runtime,
                         'python': sys.version, 'dependencies': dependencies(),
                         'spec': spec, 'schedule': schedule(spec)}
@@ -316,7 +332,13 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
                 if backend:
                     backend.before_trial(directory)
                 execution_started = time.monotonic()
-                result = (backend.launch if backend else launcher)(directory, spec['execution']['wall_seconds'])
+                from .hints import HintController
+                hints = None
+                if spec['execution'].get('provide_progressive_hints', False):
+                    metadata = spec.get('suite_snapshot', {}).get('task_metadata', {}).get(task['id'], {})
+                    hints = HintController(directory, metadata, task['verifier'])
+                result = (backend.launch if backend else launcher)(directory, spec['execution']['wall_seconds'],
+                         **({'hint_controller': hints} if hints else {}))
                 row.update(result)
                 row.setdefault('execution_seconds', time.monotonic() - execution_started)
                 if result['status'] == 'completed':
@@ -339,6 +361,8 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
             except Exception as exc:
                 row.update(status='error', errors=[f'{type(exc).__name__}: {exc}'])
             finally:
+                from .hints import metrics
+                row.update(metrics(directory, spec['execution'].get('provide_progressive_hints', False), row.get('verified_success')))
                 row.update(ended_at=timestamp(), elapsed_seconds=time.monotonic() - started)
                 row.update(record_progress(directory, task['verifier'], spec['execution']['progress_seconds']))
                 write_json(directory / 'attempt.json', row)

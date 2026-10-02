@@ -252,3 +252,25 @@ def test_discovery_flag_scoring_without_private_objective_mapping():
     for answer in ('{"flags":["FLAG{a}","FLAG{a}","FLAG{b}"]}',
                    '{"flags":["FLAG{a}","FLAG{b}","fake"]}', '{"flags":{}}', '[]'):
         assert not verify(answer, definition)['passed']
+
+
+@pytest.mark.asyncio
+async def test_unattended_execution_passes_dangerous_flag(tmp_path, monkeypatch):
+    from cyber_agent_flow_eval import execution_service
+    received = []
+    class Session:
+        def __init__(self, *, auto_approve_dangerous=False, **kwargs):
+            received.append(auto_approve_dangerous)
+            self.messages = []
+            self._client = object()
+            self._exit_stack = None
+        async def start(self): pass
+        async def chat(self, prompt, cancel_event): pass
+        async def stop(self): pass
+    monkeypatch.setattr(execution_service, 'load_session', lambda engine: Session)
+    config = {'engine': dict(ENGINE), 'model': {'url':'unused', 'provider':'ollama_direct', 'name':'test'},
+        'execution': {'context_window':1024, 'max_turns':1, 'tool_timeout':1,
+            'network_policy':{'allow':[], 'disallow':[]}, 'auto_approve_dangerous':True},
+        'server_command':'unused', 'run_id':'test', 'tools':[], 'guidance':'', 'prompt':'task'}
+    await execution_service.execute(config, tmp_path)
+    assert received == [True]

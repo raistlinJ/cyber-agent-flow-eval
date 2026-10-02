@@ -98,8 +98,12 @@ def resolve(path):
     if 'ssl_verify' in model and type(model['ssl_verify']) is not bool:
         raise ValueError('ssl_verify must be boolean')
     execution = spec['execution']
-    fields(execution, ['wall_seconds', 'max_turns', 'tool_timeout', 'context_window', 'network_policy', 'target_lock', 'reveal_network_policy', 'progress_seconds'],
+    fields(execution, ['wall_seconds', 'max_turns', 'tool_timeout', 'context_window', 'network_policy', 'target_lock', 'reveal_network_policy', 'progress_seconds', 'provide_progressive_hints', 'auto_approve_dangerous'],
            ['wall_seconds', 'max_turns', 'network_policy', 'target_lock'], 'execution')
+    if type(execution.get('provide_progressive_hints', False)) is not bool:
+        raise ValueError('provide_progressive_hints must be a boolean')
+    if type(execution.get('auto_approve_dangerous', False)) is not bool:
+        raise ValueError('auto_approve_dangerous must be a boolean')
     execution.setdefault('reveal_network_policy', False)
     if type(execution['reveal_network_policy']) is not bool:
         raise ValueError('reveal_network_policy must be boolean')

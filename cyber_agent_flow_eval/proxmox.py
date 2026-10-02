@@ -221,7 +221,7 @@ class ProxmoxBackend:
         finally:
             self.agent.call(vmid, 'unlink', path=result['path'])
 
-    def launch(self, directory, seconds):
+    def launch(self, directory, seconds, hint_controller=None):
         token = uuid.uuid4().hex
         record = {'vmid': self.vmid, 'unit': 'caf-eval-' + token,
                   'path': self.config['workspace'].rstrip('/') + '/' + token, 'stopped': False,
@@ -268,6 +268,11 @@ class ProxmoxBackend:
                 if time.monotonic() >= deadline:
                     status['Result'] = 'timeout'
                     break
+                if hint_controller:
+                    request = self.agent.call(self.vmid, 'hint_request', path=record['path'] + '/attempt')
+                    if request and request.get('sequence') != (hint_controller.response or {}).get('sequence'):
+                        response = hint_controller.respond(request)
+                        self.agent.call(self.vmid, 'hint_reply', path=record['path'] + '/attempt', response=response)
                 time.sleep(self.config['poll_seconds'])
         finally:
             checkpoint('stopping')

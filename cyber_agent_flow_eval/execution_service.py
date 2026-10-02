@@ -5,6 +5,7 @@ process-scoped configuration shared with the native MCP subprocess.
 """
 import asyncio
 import json
+import inspect
 import os
 import threading
 import time
@@ -95,7 +96,13 @@ async def execute(config, directory):
                     errors.append(f'Timeout cleanup failed: {exc}')
 
     model, limits = config['model'], config['execution']
-    session = load_session(config['engine'])(
+    session_class = load_session(config['engine'])
+    session_options = {}
+    if limits.get('auto_approve_dangerous', False):
+        if 'auto_approve_dangerous' not in inspect.signature(session_class).parameters:
+            raise ValueError('Unattended actions require a CAF checkout supporting auto_approve_dangerous on the participant VM')
+        session_options['auto_approve_dangerous'] = True
+    session = session_class(
         ollama_url=model['url'], llm_provider=model['provider'], model=model['name'],
         api_key=os.environ.get(model.get('api_key_env', '')), ssl_verify=model.get('ssl_verify', True),
         server_command=config['server_command'], run_id=config['run_id'], event_callback=on_event,
@@ -103,15 +110,43 @@ async def execute(config, directory):
         tool_timeout=limits['tool_timeout'], network_policy=limits['network_policy'],
         enabled_tool_guides=[], enabled_playbooks=[], allowed_tools=config['tools'],
         guidance_text=config['guidance'], reveal_network_policy=limits.get('reveal_network_policy', False),
+        **session_options,
     )
     recorder = None
     status = 'completed'
     try:
+        async def progressive_hint(observation):
+            # Only observations leave the worker; unreleased hints remain on the host.
+            sequence = observation['turn']
+            request = dict(observation, sequence=sequence,
+                           final_truncated=len(observation.get('final_answer') or '') > 1200,
+                           final_answer=(observation.get('final_answer') or '')[:1200] or None)
+            # QGA stdout is bounded, including JSON escaping of Unicode text.
+            while len(json.dumps(request)) > 3500:
+                if request['results']:
+                    request['results'].pop(0)
+                else:
+                    request['final_answer'] = (request['final_answer'] or '')[:len(request['final_answer'] or '') // 2]
+                    request['final_truncated'] = True
+            write_json(directory / 'hint-request.json', request)
+            while not cancel.is_set():
+                try:
+                    response = json.loads((directory / 'hint-response.json').read_text())
+                    if response.get('sequence') == sequence:
+                        return response.get('hint')
+                except FileNotFoundError:
+                    pass
+                await asyncio.sleep(.1)
+            return None
+
+        hints_enabled = limits.get('provide_progressive_hints', False)
+        if hints_enabled and 'progress_callback' not in inspect.signature(session.chat).parameters:
+            raise ValueError('Progressive hints require an updated cyber-agent-flow checkout on the participant VM')
         await session.start()
         write_json(directory / 'checkpoint.json', plain(session.messages))
         recorder = RecordingClient(session._client, directory / 'model_calls', origin=started)
         session._client = recorder
-        await session.chat(config['prompt'], cancel_event=cancel)
+        await session.chat(config['prompt'], cancel_event=cancel, **({'progress_callback': progressive_hint} if hints_enabled else {}))
         if interaction:
             status = 'interaction_required'
         elif errors:
