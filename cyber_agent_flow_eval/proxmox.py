@@ -34,6 +34,12 @@ def authorized_operations(check):
 
 
 class GuestAgent:
+    def __new__(cls, config, **kwargs):
+        if cls is GuestAgent and config.get('type') == 'fusion':
+            from .fusion import FusionGuestAgent
+            return object.__new__(FusionGuestAgent)
+        return object.__new__(cls)
+
     def __init__(self, config, *, authorize=None):
         self.authorize = authorize if authorize is not None else _authorization.get()
         self.config = config

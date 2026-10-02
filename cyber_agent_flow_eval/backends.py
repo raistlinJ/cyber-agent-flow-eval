@@ -1,5 +1,5 @@
 """Execution backend configuration. Host platforms are explicit extension points."""
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 import re
 
 
@@ -23,12 +23,19 @@ def resolve_backend(value):
     if kind == 'local':
         fields(value, ['type'], ['type'], 'backend')
         return dict(value)
-    if kind != 'proxmox':
-        raise ValueError('backend.type must be local, proxmox, macos, linux, or windows')
+    if kind not in ('proxmox', 'fusion'):
+        raise ValueError('backend.type must be local, proxmox, fusion, macos, linux, or windows')
     allowed = ['type', 'participant_vmid', 'app_vmid', 'workspace', 'user', 'guest_python',
                'environment_file', 'command_timeout', 'poll_seconds', 'max_transfer_bytes', 'before_trial']
+    if kind == 'fusion':
+        allowed += ['inventory_file', 'vmrun']
     fields(value, allowed, ['type', 'participant_vmid', 'user'], 'backend')
     value = dict(value)
+    if kind == 'fusion':
+        if not isinstance(value.get('inventory_file'), str) or not Path(value['inventory_file']).is_absolute():
+            raise ValueError('Fusion inventory_file must be an absolute host path')
+        if 'vmrun' in value and (not isinstance(value['vmrun'], str) or not Path(value['vmrun']).is_absolute()):
+            raise ValueError('Fusion vmrun must be an absolute host path')
     for key in ('participant_vmid', 'app_vmid'):
         if key in value:
             positive(value[key], f'backend.{key}')
@@ -69,6 +76,9 @@ def resolve_backend(value):
 
 
 def create_backend(spec):
+    if spec['backend']['type'] == 'fusion':
+        from .fusion import FusionBackend
+        return FusionBackend(spec['backend'], spec['engine'])
     if spec['backend']['type'] == 'proxmox':
         from .proxmox import ProxmoxBackend
         return ProxmoxBackend(spec['backend'], spec['engine'])

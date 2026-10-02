@@ -34,7 +34,8 @@ def read_runtime(path):
 
 def recover(runtime, output):
     """Stop and collect journaled remote attempts without launching new work."""
-    backend = ProxmoxBackend(runtime['backend'], runtime['engine'])
+    from .backends import create_backend
+    backend = create_backend(runtime)
     output = Path(output)
     if not output.exists():
         return
