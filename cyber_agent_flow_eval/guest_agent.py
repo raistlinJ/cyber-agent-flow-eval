@@ -197,6 +197,24 @@ print(json.dumps({'python': sys.version, 'executable': sys.executable, 'dependen
                 raise ValueError('Guest trial was cancelled before service start')
             command(argv)
         return {}
+    if op == 'preflight':
+        units = data.get('units', [])
+        if not isinstance(units, list) or len(units) > 128 or any(not isinstance(unit, str) or not re.fullmatch(r'caf-(?:eval|orchestrator)-[a-f0-9]+', unit) for unit in units):
+            raise ValueError('Invalid recorded cleanup units')
+        stopped = []
+        for unit in units:
+            state = _dispatch({'op':'stop', 'unit':unit})
+            stopped.append({'unit':unit, 'state':state.get('ActiveState')})
+        output = command(['systemctl', 'list-units', '--all', '--plain', '--no-legend', '--no-pager',
+                          'caf-eval-*', 'caf-orchestrator-*'])
+        remaining = []
+        for line in output.splitlines():
+            fields = line.split()
+            if len(fields) >= 4 and fields[0].startswith(('caf-eval-', 'caf-orchestrator-')) and fields[2] not in ('inactive', 'failed'):
+                remaining.append({'unit':fields[0], 'active':fields[2], 'sub':fields[3]})
+        if remaining:
+            raise ValueError('VM has active CAF services not confirmed stopped: ' + json.dumps(remaining))
+        return {'ready':True, 'stopped':stopped}
     if op == 'status':
         return service_status(data['unit'])
     if op == 'stop':

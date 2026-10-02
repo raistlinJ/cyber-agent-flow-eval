@@ -447,3 +447,58 @@ def test_optional_progress_write_failure_does_not_skip_worker_stop(remote_spec, 
     rows = run(path, tmp_path / 'results')
     assert failures and all(row['status'] == 'completed' for row in rows)
     assert sum(op == 'stop' for _, op, _ in agent.calls) >= len(rows)
+
+
+@pytest.mark.parametrize('operation',['stat','stop'])
+def test_slow_dispatch_still_polls_acknowledged_guest_operation(config,monkeypatch,operation):
+    import time
+    clock=[0]
+    monkeypatch.setattr(time,'monotonic',lambda:clock[0])
+    calls=[]
+    agent=GuestAgent(config)
+    def qm(args,**kwargs):
+        calls.append(args)
+        if args[1]=='exec':
+            clock[0]+=config['command_timeout']+5
+            return {'pid':1947}
+        return {'exited':True,'exitcode':0,'out-data':json.dumps({'ok':True})}
+    monkeypatch.setattr(agent,'qm',qm)
+    assert agent.call(453833,operation)=={'ok':True}
+    assert [call[1] for call in calls]==['exec','exec-status']
+
+
+def test_pending_guest_operation_still_has_bounded_poll_deadline(config,monkeypatch):
+    import time
+    clock=[0]
+    monkeypatch.setattr(time,'monotonic',lambda:clock[0])
+    monkeypatch.setattr(time,'sleep',lambda seconds:clock.__setitem__(0,clock[0]+seconds))
+    calls=[]
+    agent=GuestAgent(config)
+    def qm(args,**kwargs):
+        calls.append(args)
+        if args[1]=='exec':
+            clock[0]+=40
+            return {'pid':1947}
+        clock[0]+=2
+        return {'exited':False}
+    monkeypatch.setattr(agent,'qm',qm)
+    with pytest.raises(ValueError,match='stop timed out; guest PID 1947'):
+        agent.call(453833,'stop',timeout=5)
+    assert len([args for args in calls if args[1]=='exec'])==1
+    assert len(calls)<=5
+
+
+def test_guest_preflight_stops_only_recorded_units_and_blocks_unknown_active_jobs(tmp_path,monkeypatch):
+    monkeypatch.setattr(guest_agent,'CONTROL_DIR',tmp_path/'control')
+    commands=[]
+    monkeypatch.setattr(guest_agent,'service_status',lambda unit:{'LoadState':'not-found','ActiveState':'inactive'})
+    def command(argv,**kwargs):
+        commands.append(argv)
+        return 'caf-orchestrator-bbbb.service loaded active running foreign job\n'
+    monkeypatch.setattr(guest_agent,'command',command)
+    with pytest.raises(ValueError,match='active CAF services'):
+        guest_agent._dispatch({'op':'preflight','units':['caf-orchestrator-aaaa']})
+    assert (tmp_path/'control/caf-orchestrator-aaaa.control').read_text()=='cancelled\n'
+    assert not (tmp_path/'control/caf-orchestrator-bbbb.control').exists()
+    monkeypatch.setattr(guest_agent,'command',lambda *a,**k:'')
+    assert guest_agent._dispatch({'op':'preflight','units':[]})['ready']

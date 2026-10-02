@@ -56,7 +56,6 @@ class GuestAgent:
 
     def call(self, vmid, op, *, timeout=None, **data):
         timeout = timeout or self.config['command_timeout']
-        deadline = time.monotonic() + timeout
         payload = json.dumps(dict(data, op=op))
         if op == 'write':
             if len(payload.encode()) > 1024 * 1024:
@@ -71,6 +70,10 @@ class GuestAgent:
                               self.config['guest_python'], '-c', self.script, payload])
         if not result.get('exited') and type(result.get('pid')) is not int:
             raise ValueError('Guest agent did not return an execution PID')
+        # Authorization and host dispatch may consume the entire configured
+        # interval before the guest PID is available. Always allow result polling
+        # its own bounded window; never relaunch an acknowledged operation.
+        deadline = time.monotonic() + timeout
         status = result
         while True:
             if status.get('exited'):
