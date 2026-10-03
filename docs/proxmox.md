@@ -311,6 +311,11 @@ marker blocks new trial/hook launches after a reboot too. Stop/recovery operatio
 remain available. Use the orchestrator's application rollback/recovery flow to
 resolve interrupted maintenance, rather than deleting the marker to bypass it.
 
-All coordinators sharing these guests need the updated evaluator. The Proxmox
-engine probe also records `engine_revision` and `engine_modified` in the manifest's
+All coordinators sharing these guests need the updated evaluator. Host startup
+can inspect `guest_agent.SUPPORTED_OPERATIONS` before dispatching work. Preflight
+recovers recorded trial, reset-hook (`caf-eval-hook-*`) and orchestrator units;
+unrecorded active CAF units continue to block launch. Helpers are transferred
+from the host, so these fixes need a host evaluator update, not guest reprovisioning.
+
+The Proxmox engine probe also records `engine_revision` and `engine_modified` in the manifest's
 `engine_runtime` when CAF is a Git checkout, alongside the existing source hash.

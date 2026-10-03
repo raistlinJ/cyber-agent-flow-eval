@@ -81,3 +81,20 @@ def test_fusion_wrapper_executes_large_stdin_rpc_without_argument_limit(config,m
         return ''
     monkeypatch.setattr(agent,'_run',run)
     assert agent.call(9403,'write',content='x'*600000)=={'size':600000}
+
+
+@pytest.mark.parametrize('fusion', [False, True])
+def test_guest_agent_copy_preserves_transport_and_isolates_script(config, fusion):
+    from copy import copy
+    backend=config if fusion else dict(type='proxmox',command_timeout=5)
+    authorize=lambda args: None
+    agent=GuestAgent(backend,authorize=authorize)
+    copied=copy(agent)
+    assert type(copied) is type(agent)
+    assert copied is not agent
+    assert copied.config is agent.config
+    assert copied.authorize is authorize
+    original=agent.script
+    copied.script='replacement capture helper'
+    assert agent.script==original
+    assert copied.script!=agent.script

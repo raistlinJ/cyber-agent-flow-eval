@@ -25,6 +25,12 @@ CONTROL_DIR = Path('/run/cyber-agent-flow-eval')
 MAINTENANCE_LOCK = Path('/run/caf-application-maintenance.lock')
 MAINTENANCE_PENDING = Path('/var/lib/caf-application-maintenance.pending')
 RPC_INPUT_LIMIT = 1024 * 1024
+# Host startup checks this contract before it dispatches work to a VM. Helpers
+# are sent from the host; no persistent guest-side evaluator install is needed.
+SUPPORTED_OPERATIONS = frozenset({
+    'hint_request', 'hint_reply', 'probe', 'mkdir', 'write', 'stat', 'read',
+    'unlink', 'start', 'preflight', 'status', 'stop', 'pack', 'hook',
+})
 
 
 def command(argv, timeout=20, allow_failure=False):
@@ -199,7 +205,7 @@ print(json.dumps({'python': sys.version, 'executable': sys.executable, 'dependen
         return {}
     if op == 'preflight':
         units = data.get('units', [])
-        if not isinstance(units, list) or len(units) > 128 or any(not isinstance(unit, str) or not re.fullmatch(r'caf-(?:eval|orchestrator)-[a-f0-9]+', unit) for unit in units):
+        if not isinstance(units, list) or len(units) > 128 or any(not isinstance(unit, str) or not re.fullmatch(r'caf-(?:eval(?:-hook)?|orchestrator)-[a-f0-9]+', unit) for unit in units):
             raise ValueError('Invalid recorded cleanup units')
         stopped = []
         for unit in units:

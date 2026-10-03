@@ -502,3 +502,31 @@ def test_guest_preflight_stops_only_recorded_units_and_blocks_unknown_active_job
     assert not (tmp_path/'control/caf-orchestrator-bbbb.control').exists()
     monkeypatch.setattr(guest_agent,'command',lambda *a,**k:'')
     assert guest_agent._dispatch({'op':'preflight','units':[]})['ready']
+
+
+def test_preflight_recovers_reset_hooks_without_stopping_other_services(tmp_path, monkeypatch):
+    monkeypatch.setattr(guest_agent, 'CONTROL_DIR', tmp_path/'controls')
+    units=['caf-eval-hook-'+'a'*32,'caf-eval-'+'b'*32,'caf-orchestrator-'+'c'*32]
+    stopped=[]
+    states={unit:'active' for unit in units}
+    def status(unit):
+        return dict(LoadState='loaded',ActiveState=states[unit],SubState='running' if states[unit]=='active' else 'dead')
+    def command(argv, **kwargs):
+        if argv[:2]==['systemctl','stop']:
+            assert argv[2] in units
+            stopped.append(argv[2])
+            states[argv[2]]='inactive'
+        return ''
+    monkeypatch.setattr(guest_agent,'service_status',status)
+    monkeypatch.setattr(guest_agent,'command',command)
+    result=guest_agent.dispatch(dict(op='preflight',units=units))
+    assert result['ready'] and stopped==units
+    assert all((tmp_path/'controls'/(unit+'.control')).read_text()=='cancelled\n' for unit in units)
+    assert 'preflight' in guest_agent.SUPPORTED_OPERATIONS
+
+
+@pytest.mark.parametrize('unit',['ssh.service','caf-eval-hook-not-a-token','caf-eval-hook-../escape','caf-eval-hook-abcd.service'])
+def test_preflight_rejects_unowned_or_malformed_hook_units(unit, monkeypatch):
+    monkeypatch.setattr(guest_agent,'command',lambda *a,**kw:pytest.fail('Invalid cleanup touched guest services'))
+    with pytest.raises(ValueError,match='Invalid recorded cleanup units'):
+        guest_agent.dispatch(dict(op='preflight',units=[unit]))

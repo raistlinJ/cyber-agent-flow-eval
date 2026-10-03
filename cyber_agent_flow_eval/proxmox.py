@@ -34,8 +34,10 @@ def authorized_operations(check):
 
 
 class GuestAgent:
-    def __new__(cls, config, **kwargs):
-        if cls is GuestAgent and config.get('type') == 'fusion':
+    def __new__(cls, config=None, **kwargs):
+        # copy reconstructs the concrete class without constructor arguments.
+        # Dispatch only during normal construction with a backend config.
+        if cls is GuestAgent and config is not None and config.get('type') == 'fusion':
             from .fusion import FusionGuestAgent
             return object.__new__(FusionGuestAgent)
         return object.__new__(cls)
