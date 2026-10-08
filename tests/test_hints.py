@@ -43,8 +43,13 @@ def test_observed_facts_are_never_revealed_again(tmp_path):
 
 
 def test_final_answer_and_no_plan(tmp_path):
-    with pytest.raises(ValueError, match='no usable'):
-        HintController(tmp_path, {}, dict(type='contains_all', expected=['answer']))
+    empty = HintController(tmp_path, {}, dict(type='contains_all', expected=['answer']))
+    assert not empty.available
+    assert empty.respond(request(5, final='wrong'))['hint'] is None
+    audit = metrics(tmp_path, True, True)
+    assert audit['progressive_hints_available'] is False
+    assert 'running unassisted' in audit['progressive_hints_reason']
+    assert audit['unassisted_success'] and not audit['assisted_success']
     with pytest.raises(ValueError, match='verifier answer'):
         HintController(tmp_path, {'progressive_hints': ['the answer is SECRET']}, dict(type='contains_all', expected=['SECRET']))
     c = HintController(tmp_path, {'progressive_hints': ['Inspect the page', 'unreleased private hint']}, dict(type='json_equals', expected={'token': 'SECRET'}))
@@ -54,7 +59,8 @@ def test_final_answer_and_no_plan(tmp_path):
 
 
 @pytest.mark.parametrize('remote', [False, True])
-def test_worker_exchange_keeps_private_plan_on_host(tmp_path, config, remote):
+@pytest.mark.parametrize('has_plan', [False, True])
+def test_worker_exchange_keeps_private_plan_on_host(tmp_path, config, remote, has_plan):
     engine = tmp_path / 'engine'; engine.mkdir()
     source = ENGINE_SOURCE[:ENGINE_SOURCE.index('    async def chat(')] + '''    async def chat(self, prompt, cancel_event, progress_callback=None):
         hint = await progress_callback(dict(turn=1, results=[], final_answer='stuck'))
@@ -68,7 +74,7 @@ def test_worker_exchange_keeps_private_plan_on_host(tmp_path, config, remote):
         tools=[], guidance='', server_command='unused', model=dict(url='http://localhost', provider='ollama', name='fake'),
         execution=dict(context_window=8192, max_turns=3, tool_timeout=5, network_policy={}, provide_progressive_hints=True)))
     write_json(directory / 'catalog.json', {})
-    controller = HintController(directory, {'progressive_hints': ['Inspect the page', 'UNRELEASED']}, dict(type='contains_all', expected=['VERIFIER-SECRET']))
+    controller = HintController(directory, {'progressive_hints': ['Inspect the page', 'UNRELEASED']} if has_plan else {}, dict(type='contains_all', expected=['VERIFIER-SECRET']))
     if remote:
         class AsyncGuest(GuestSimulator):
             def call(self, vmid, op, **data):
@@ -93,7 +99,7 @@ def test_worker_exchange_keeps_private_plan_on_host(tmp_path, config, remote):
     else:
         result = launch(directory, 10, hint_controller=controller)
     assert result['status'] == 'completed' and result['final_answer'] == 'recovered'
-    assert len(controller.events) == 1
+    assert len(controller.events) == (1 if has_plan else 0)
     assert 'UNRELEASED' not in (directory / 'input.json').read_text()
 
 

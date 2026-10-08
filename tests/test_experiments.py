@@ -274,3 +274,19 @@ async def test_unattended_execution_passes_dangerous_flag(tmp_path, monkeypatch)
         'server_command':'unused', 'run_id':'test', 'tools':[], 'guidance':'', 'prompt':'task'}
     await execution_service.execute(config, tmp_path)
     assert received == [True]
+
+
+def test_empty_progressive_hint_plan_runs_and_reports_unassisted(specification,tmp_path):
+    raw=yaml.safe_load(specification.read_text())
+    raw['execution']['provide_progressive_hints']=True
+    specification.write_text(yaml.safe_dump(raw))
+    messages=[]
+    def worker(directory,seconds,*,hint_controller=None):
+        assert hint_controller is None
+        assert read_json(directory/'input.json')['execution']['provide_progressive_hints'] is False
+        return successful_worker(directory,seconds)
+    rows=run(specification,tmp_path/'no-hints',launcher=worker,progress=messages.append)
+    assert all(row['status']=='completed' and row['verified_success'] for row in rows)
+    assert all(row['progressive_hints_available'] is False and row['hints_released']==0 for row in rows)
+    assert all(row['unassisted_success'] and not row['assisted_success'] for row in rows)
+    assert any('progressive hints unavailable' in message for message in messages)

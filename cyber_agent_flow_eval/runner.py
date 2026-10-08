@@ -224,7 +224,7 @@ def export(output):
     temporary.replace(output / 'dataset.jsonl')
     columns = ['experiment_id', 'spec_hash', 'trial_id', 'pair_id', 'task_id', 'family', 'split',
                'scenario_id', 'condition_id', 'artifact_hash', 'repetition', 'attempt', 'status',
-               'verified_success', 'provide_progressive_hints', 'hints_released', 'facts_revealed', 'assisted_success', 'unassisted_success', 'score', 'suite_id', 'package_hash', 'core_session_id', 'readiness_checked_at',
+               'verified_success', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hints_released', 'facts_revealed', 'assisted_success', 'unassisted_success', 'score', 'suite_id', 'package_hash', 'core_session_id', 'readiness_checked_at',
                'elapsed_seconds', 'execution_seconds', 'flags_observed', 'progress_score', 'time_to_first_flag_seconds', 'attempt_path']
     temporary = output / 'dataset.csv.tmp'
     with temporary.open('w', newline='') as stream:
@@ -337,6 +337,12 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
                 if spec['execution'].get('provide_progressive_hints', False):
                     metadata = spec.get('suite_snapshot', {}).get('task_metadata', {}).get(task['id'], {})
                     hints = HintController(directory, metadata, task['verifier'])
+                    if not hints.available:
+                        if progress is not None:
+                            progress(f'{trial["trial_id"]}: progressive hints unavailable — {hints.unavailable_reason}')
+                        participant['execution']['provide_progressive_hints'] = False
+                        write_json(directory / 'input.json', participant)
+                        hints = None
                 result = (backend.launch if backend else launcher)(directory, spec['execution']['wall_seconds'],
                          **({'hint_controller': hints} if hints else {}))
                 row.update(result)

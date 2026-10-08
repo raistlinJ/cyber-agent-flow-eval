@@ -153,7 +153,7 @@ def write_export(directory, report):
         for row in rows:
             stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + '\n')
     columns = ['experiment_id', 'trial_id', 'condition_id', 'task_id', 'repetition', 'attempt', 'status',
-               'verified_success', 'provide_progressive_hints', 'hints_released', 'facts_revealed', 'assisted_success', 'unassisted_success', 'score', 'execution_seconds', 'elapsed_seconds', 'progress_score',
+               'verified_success', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hints_released', 'facts_revealed', 'assisted_success', 'unassisted_success', 'score', 'execution_seconds', 'elapsed_seconds', 'progress_score',
                'time_to_first_flag_seconds', 'artifact_hash', 'spec_hash', 'attempt_path']
     with (directory / 'dataset.csv').open('x', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=columns, extrasaction='ignore')

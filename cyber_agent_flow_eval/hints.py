@@ -53,12 +53,12 @@ class HintController:
                 if safe(text):
                     self.hints.append(dict(id=f"{fact['id']}-{stage}", text=text, source='scenario_fact',
                         fact_id=fact['id'], stage=stage, requires=sorted(requirements), reveals_fact=stage == 3 or fact['value'] in text))
-        if not self.hints:
-            raise ValueError('Progressive hints enabled but task has no usable progressive_hints or discoverable_facts')
+        self.available = bool(self.hints)
+        self.unavailable_reason = None if self.available else 'Task has no usable progressive_hints or discoverable_facts; running unassisted'
         self.save()
 
     def save(self):
-        write_json(self.directory / 'assistance.json', dict(policy=POLICY, events=self.events,
+        write_json(self.directory / 'assistance.json', dict(policy=POLICY, available=self.available, unavailable_reason=self.unavailable_reason, events=self.events,
                    observed_fact_ids=sorted(self.observed), revealed_fact_ids=sorted(self.revealed)))
 
     def respond(self, request):
@@ -123,7 +123,8 @@ def metrics(directory, enabled, success):
     path = directory / 'assistance.json'
     audit = read_json(path) if path.exists() else {}
     events = audit.get('events', [])
-    return dict(provide_progressive_hints=enabled, hints_released=len(events),
+    return dict(provide_progressive_hints=enabled, progressive_hints_available=audit.get('available', True if events else None) if enabled else False,
+                progressive_hints_reason=audit.get('unavailable_reason') if enabled else None, hints_released=len(events),
                 facts_revealed=len(audit.get('revealed_fact_ids', [])), assistance= audit,
                 assisted_success=success is True and bool(events),
                 unassisted_success=success is True and not events)
