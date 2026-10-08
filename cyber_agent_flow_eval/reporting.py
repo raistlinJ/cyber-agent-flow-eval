@@ -70,8 +70,11 @@ def summarize(rows):
     passed = sum(r['verified_success'] for r in verified)
     return {'trials_observed': len(rows), 'status_counts': dict(Counter(r['status'] for r in rows)),
             'verified_trials': len(verified), 'verified_successes': passed,
+            'solution_assisted_successes': sum(bool(r.get('solution_assisted_success')) for r in verified),
+            'hints_assisted_successes': sum(bool(r.get('hints_assisted_success', r.get('assisted_success') and not r.get('solution_provided'))) for r in verified),
+            'solutions_released': sum(r.get('solutions_released', 0) for r in rows),
             'assisted_successes': sum(bool(r.get('assisted_success')) for r in verified),
-            'unassisted_successes': sum(bool(r.get('unassisted_success', r['verified_success'] and not r.get('hints_released')) ) for r in verified),
+            'unassisted_successes': sum(bool(r.get('unassisted_success', r['verified_success'] and not (r.get('hints_released') or r.get('solutions_released') or r.get('solution_provided') or r.get('retries_requested') or r.get('assisted_success'))) ) for r in verified),
             'hints_released': sum(r.get('hints_released', 0) for r in rows),
             'facts_revealed': sum(r.get('facts_revealed', 0) for r in rows),
             'success_rate': passed / len(verified) if verified else None,
@@ -153,7 +156,7 @@ def write_export(directory, report):
         for row in rows:
             stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + '\n')
     columns = ['experiment_id', 'trial_id', 'condition_id', 'task_id', 'repetition', 'attempt', 'status',
-               'verified_success', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hints_released', 'facts_revealed', 'assisted_success', 'unassisted_success', 'score', 'execution_seconds', 'elapsed_seconds', 'progress_score',
+               'verified_success', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hints_released', 'facts_revealed', 'max_tries_before_solution', 'solutions_released', 'solution_provided', 'retries_requested', 'solution_assisted_success', 'hints_assisted_success', 'assisted_success', 'unassisted_success', 'score', 'execution_seconds', 'elapsed_seconds', 'progress_score',
                'time_to_first_flag_seconds', 'artifact_hash', 'spec_hash', 'attempt_path']
     with (directory / 'dataset.csv').open('x', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=columns, extrasaction='ignore')

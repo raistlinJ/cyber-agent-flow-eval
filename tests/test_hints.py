@@ -114,3 +114,102 @@ def test_numeric_verifier_answer_is_never_used_as_hint(tmp_path):
     with pytest.raises(ValueError, match='verifier answer'):
         HintController(tmp_path, {'progressive_hints': ['PIN: 123456']},
                        dict(type='json_equals', expected={'pin': 123456}))
+
+
+@pytest.mark.parametrize('limit', [1, 4, 9])
+def test_configurable_limit_withholds_walkthrough_and_answer_until_solution(tmp_path, limit):
+    controller = HintController(tmp_path, {'progressive_hints': ['A small nudge.', 'Inspect the response headers.']},
+        {'type':'contains_all','expected':['PRIVATE_FLAG']}, {'max_tries_before_solution':limit})
+    for turn in range(1, limit):
+        assert 'PRIVATE_FLAG' not in (controller.respond(request(turn, final='wrong'))['hint'] or '')
+    reply = controller.respond(request(limit))['hint']
+    assert 'Inspect the response headers.' in reply and 'PRIVATE_FLAG' in reply
+    audit = metrics(tmp_path, True, True)
+    assert audit['max_tries_before_solution'] == limit
+    assert audit['solution_provided'] and audit['solutions_released'] == 1
+    assert audit['assisted_success'] and not audit['unassisted_success']
+    assert audit['assistance']['events'][-1]['reason'] == 'max_tries_before_solution'
+    assert audit['solution_assisted_success'] and not audit['hints_assisted_success']
+    reply = controller.respond(request(limit))['hint']
+    assert 'Inspect the response headers.' in reply and 'PRIVATE_FLAG' in reply
+    assert len(controller.events) <= 3
+
+
+def test_new_progress_resets_tries_before_final_guidance(tmp_path):
+    controller = HintController(tmp_path, {'progressive_hints':['A small nudge.', 'Final safe guidance.']},
+        {'type':'contains_all','expected':['PRIVATE_FLAG']}, {'max_tries_before_solution':4})
+    controller.respond(request(2))
+    assert controller.respond(request(3, results=['new useful tool output']))['hint'] is None
+    assert 'PRIVATE_FLAG' not in (controller.respond(request(4))['hint'] or '')
+    assert 'PRIVATE_FLAG' not in (controller.respond(request(6, final='wrong'))['hint'] or '')
+    assert 'PRIVATE_FLAG' in controller.respond(request(7))['hint']
+    assert read_json(tmp_path/'assistance.json')['tries_without_progress'] == 4
+
+
+def test_final_fact_reveal_waits_for_configured_limit(tmp_path):
+    metadata = {'discoverable_facts':[dict(id='password',artifact='Credential(password)',value='private-password',source_node='n',evidence='Read /note') ]}
+    controller = HintController(tmp_path, metadata, {'type':'contains_all','expected':['FLAG']}, {'max_tries_before_solution':9})
+    assert 'private-password' not in controller.respond(request(2))['hint']
+    assert '/note' in controller.respond(request(4))['hint']
+    assert controller.respond(request(6))['hint'] is None
+    assert 'private-password' in controller.respond(request(9))['hint']
+    assert metrics(tmp_path,True,True)['facts_revealed'] == 1
+
+
+def test_final_guidance_does_not_bypass_fact_prerequisites_or_correct_answers(tmp_path):
+    metadata = {'discoverable_facts':[dict(id='password',artifact='Credential(password)',value='private-password',source_node='n',evidence='Read /note',requires=['unseen'])]}
+    controller = HintController(tmp_path, metadata, {'type':'contains_all','expected':['FLAG']}, {'max_tries_before_solution':1})
+    assert controller.respond(request(10))['hint'] is None
+    correct = HintController(tmp_path, {'progressive_hints':['Final safe guidance.']},
+        {'type':'contains_all','expected':['FLAG']}, {'max_tries_before_solution':1})
+    assert correct.respond(request(10,final='FLAG'))['hint'] is None
+    assert not correct.events
+
+
+@pytest.mark.parametrize('limit', [0, -1, True, 1.5, '4', 1001])
+def test_invalid_solution_limit(tmp_path, limit):
+    with pytest.raises(ValueError, match='max_tries_before_solution'):
+        HintController(tmp_path, {}, {'type':'contains_all','expected':['FLAG']}, {'max_tries_before_solution':limit})
+
+
+def test_single_final_hint_keeps_agent_trying_and_feedback_counts_as_assistance(tmp_path):
+    controller = HintController(tmp_path, {'progressive_hints':['Final safe guidance.']},
+        {'type':'contains_all','expected':['FLAG']}, {'max_tries_before_solution':3})
+    assert 'FLAG' not in controller.respond(request(1,final='wrong'))['hint']
+    assert 'Try again' in controller.respond(request(2,final='wrong'))['hint']
+    before = metrics(tmp_path,True,True)
+    assert before['hints_released'] == 1 and before['retries_requested'] == 1
+    assert before['assisted_success'] and not before['unassisted_success']
+    assert 'FLAG' in controller.respond(request(3,final='wrong'))['hint']
+    assert len(controller.events) == 2
+
+
+def test_evidence_that_contains_fact_value_waits_for_solution_limit(tmp_path):
+    controller = HintController(tmp_path, {'discoverable_facts':[
+        dict(id='secret',artifact='Credential(password)',value='private-password',source_node='n',
+             evidence='The note says private-password')]},
+        {'type':'contains_all','expected':['FLAG']}, {'max_tries_before_solution':8})
+    assert 'private-password' not in controller.respond(request(2))['hint']
+    assert controller.respond(request(4))['hint'] is None
+    assert 'private-password' in controller.respond(request(8))['hint']
+
+
+def test_only_current_challenge_walkthrough_and_flag_are_released(tmp_path):
+    metadata = {'challenge_solutions':[
+        dict(node_id='first',text='Use curl on the first page. Submit FLAG_ONE.',completion_values=['FLAG_ONE']),
+        dict(node_id='second',text='Use the key on the second page. Submit FLAG_TWO.',completion_values=['FLAG_TWO'])]}
+    controller = HintController(tmp_path, metadata, {'type':'contains_all','expected':['FLAG_ONE','FLAG_TWO']},
+                                {'max_tries_before_solution':2})
+    assert controller.respond(request(1))['hint'] is None
+    assert 'FLAG_TWO' not in (tmp_path/'assistance.json').read_text()
+    reply = controller.respond(request(2))['hint']
+    assert 'Use curl' in reply and 'FLAG_ONE' in reply and 'FLAG_TWO' not in reply
+    assert controller.respond(request(3,results=['Recovered FLAG_ONE']))['hint'] is None
+    assert controller.respond(request(4))['hint'] is None
+    reply = controller.respond(request(5))['hint']
+    assert 'FLAG_TWO' in reply and 'FLAG_ONE' not in reply
+    metrics_row = metrics(tmp_path,True,True)
+    assert metrics_row['solutions_released']==2 and metrics_row['hints_released']==0
+    assert metrics_row['solution_assisted_success'] and not metrics_row['unassisted_success']
+    assert not metrics_row['hints_assisted_success']
+    assert controller.respond(request(6,final='FLAG_ONE FLAG_TWO'))['hint'] is None

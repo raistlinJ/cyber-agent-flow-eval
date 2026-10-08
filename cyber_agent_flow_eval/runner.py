@@ -224,7 +224,7 @@ def export(output):
     temporary.replace(output / 'dataset.jsonl')
     columns = ['experiment_id', 'spec_hash', 'trial_id', 'pair_id', 'task_id', 'family', 'split',
                'scenario_id', 'condition_id', 'artifact_hash', 'repetition', 'attempt', 'status',
-               'verified_success', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hints_released', 'facts_revealed', 'assisted_success', 'unassisted_success', 'score', 'suite_id', 'package_hash', 'core_session_id', 'readiness_checked_at',
+               'verified_success', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hints_released', 'facts_revealed', 'max_tries_before_solution', 'solutions_released', 'solution_provided', 'retries_requested', 'solution_assisted_success', 'hints_assisted_success', 'assisted_success', 'unassisted_success', 'score', 'suite_id', 'package_hash', 'core_session_id', 'readiness_checked_at',
                'elapsed_seconds', 'execution_seconds', 'flags_observed', 'progress_score', 'time_to_first_flag_seconds', 'attempt_path']
     temporary = output / 'dataset.csv.tmp'
     with temporary.open('w', newline='') as stream:
@@ -270,8 +270,8 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
                 raise ValueError('Cannot resume without manifest.json')
             if any(p.name != '.coordinator.lock' for p in output.iterdir()):
                 raise ValueError('New experiment requires an empty output directory')
-            from .hints import POLICY
-            manifest = {'progressive_hint_policy': dict(POLICY) if spec['execution'].get('provide_progressive_hints') else None,
+            from .hints import resolve_policy
+            manifest = {'progressive_hint_policy': resolve_policy(spec['execution']) if spec['execution'].get('provide_progressive_hints') else None,
                         'version': 1, 'created_at': timestamp(), 'spec_hash': digest(spec),
                         'source_hash': identity, 'source_hashes': identities, 'engine_runtime': engine_runtime,
                         'python': sys.version, 'dependencies': dependencies(),
@@ -320,7 +320,7 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
             write_json(directory / 'attempt.json', row)
             write_json(directory / 'catalog.json', condition['catalog_snapshot'])
             # Only participant-facing fields are passed to the engine worker.
-            participant_execution = {key: value for key, value in spec['execution'].items() if key not in {'target_lock', 'progress_seconds'}}
+            participant_execution = {key: value for key, value in spec['execution'].items() if key not in {'target_lock', 'progress_seconds', 'max_tries_before_solution'}}
             participant = {'model': spec['model'], 'execution': participant_execution, 'engine': spec['engine'],
                            'prompt': task['prompt'], 'tools': condition['tools'],
                            'guidance': '\n\n'.join(g['text'] for g in condition['guidance_snapshot']),
@@ -335,8 +335,8 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
                 from .hints import HintController
                 hints = None
                 if spec['execution'].get('provide_progressive_hints', False):
-                    metadata = spec.get('suite_snapshot', {}).get('task_metadata', {}).get(task['id'], {})
-                    hints = HintController(directory, metadata, task['verifier'])
+                    metadata = dict(spec.get('suite_snapshot', {}).get('task_metadata', {}).get(task['id'], {}), task_prompt=task['prompt'])
+                    hints = HintController(directory, metadata, task['verifier'], spec['execution'])
                     if not hints.available:
                         if progress is not None:
                             progress(f'{trial["trial_id"]}: progressive hints unavailable — {hints.unavailable_reason}')

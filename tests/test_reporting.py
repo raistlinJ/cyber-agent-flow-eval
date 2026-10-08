@@ -101,3 +101,18 @@ def test_cli_results_export_and_stderr(recorded, tmp_path, capsys):
     assert main(['status', str(tmp_path / 'absent')]) == 2
     captured = capsys.readouterr()
     assert not captured.out and 'No experiment manifest' in captured.err
+
+
+def test_summary_separates_hint_and_solution_assisted_passes():
+    rows = [
+        dict(status='completed',verified_success=True,unassisted_success=True),
+        dict(status='completed',verified_success=True,assisted_success=True,hints_assisted_success=True,hints_released=1),
+        dict(status='completed',verified_success=True,assisted_success=True,solution_assisted_success=True,solution_provided=True,solutions_released=1),
+    ]
+    summary=reporting.summarize(rows)
+    assert summary['verified_successes']==3
+    assert summary['unassisted_successes']==1
+    assert summary['hints_assisted_successes']==1
+    assert summary['solution_assisted_successes']==1
+    assert summary['assisted_successes']==2
+    assert summary['hints_released']==1 and summary['solutions_released']==1

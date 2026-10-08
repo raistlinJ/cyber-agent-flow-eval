@@ -5,7 +5,7 @@ import time
 from datetime import datetime, timezone
 from .storage import write_json, read_json
 
-POLICY = {'version': 1, 'stalled_turns': 2, 'max_hints': 3,
+POLICY = {'version': 2, 'stalled_turns': 2, 'max_hints': 3, 'max_tries_before_solution': 6,
           'progress': 'new declared fact in bounded tool output; otherwise new successful tool output'}
 
 
@@ -22,9 +22,21 @@ def strings(value):
             yield from strings(child)
 
 
+def resolve_policy(execution=None):
+    policy = dict(POLICY)
+    tries = (execution or {}).get('max_tries_before_solution', policy['max_tries_before_solution'])
+    if type(tries) is not int or not 1 <= tries <= 1000:
+        raise ValueError('max_tries_before_solution must be an integer from 1 to 1000')
+    policy['max_tries_before_solution'] = tries
+    return policy
+
+
 class HintController:
-    def __init__(self, directory, metadata, verifier):
+    def __init__(self, directory, metadata, verifier, execution=None):
         self.directory, self.verifier = directory, verifier
+        self.policy = resolve_policy(execution)
+        self.last_observed_progress = 0
+        self.tries_without_progress = 0
         self.started = time.monotonic()
         self.facts = metadata.get('discoverable_facts', [])
         self.known = {f['id'] for f in metadata.get('starting_facts', [])}
@@ -32,7 +44,10 @@ class HintController:
         self.last_progress = 0
         self.response = None
         self.events = []
+        self.feedback = []
         self.hints = []
+        self.solutions = []
+        self.completed_challenges = set()
         answers = list(strings(verifier.get('expected')))
         def safe(text):
             return not any(answer and answer in text for answer in answers)
@@ -52,13 +67,32 @@ class HintController:
             for stage, text in enumerate((pointer, evidence, reveal), 1):
                 if safe(text):
                     self.hints.append(dict(id=f"{fact['id']}-{stage}", text=text, source='scenario_fact',
-                        fact_id=fact['id'], stage=stage, requires=sorted(requirements), reveals_fact=stage == 3 or fact['value'] in text))
-        self.available = bool(self.hints)
+                        fact_id=fact['id'], stage=stage, requires=sorted(requirements), final_fact=stage == 3 or fact['value'] in text, reveals_fact=stage == 3 or fact['value'] in text))
+        solutions = metadata.get('challenge_solutions', [])
+        if not isinstance(solutions, list):
+            raise ValueError('challenge_solutions must be a list')
+        for item in solutions:
+            if (not isinstance(item, dict) or not isinstance(item.get('node_id'), str) or not item['node_id']
+                    or not isinstance(item.get('text'), str) or not item['text'].strip() or len(item['text']) > 32000
+                    or not isinstance(item.get('completion_values', []), list)
+                    or any(not isinstance(value, str) or not value for value in item.get('completion_values', []))):
+                raise ValueError('Invalid challenge solution')
+            if any(existing['node_id'] == item['node_id'] for existing in self.solutions):
+                raise ValueError('Duplicate challenge solution node')
+            self.solutions.append(dict(item, id='solution-' + item['node_id'], source='scenario_solution', solution=True))
+        # Older packages and the samples can still provide the reviewed task
+        # procedure and exact verifier answer when no facilitator section exists.
+        if not self.solutions and self.hints and metadata.get('progressive_hints'):
+            walkthrough = metadata.get('task_prompt') or '\n'.join(metadata['progressive_hints'])
+            self.solutions.append(dict(id='solution-task',node_id='task',source='scenario_solution',solution=True,
+                completion_values=[],text='Solution walkthrough:\n' + walkthrough +
+                '\nExact answer / flag to submit:\n' + json.dumps(verifier['expected'], ensure_ascii=False)))
+        self.available = bool(self.hints or self.solutions)
         self.unavailable_reason = None if self.available else 'Task has no usable progressive_hints or discoverable_facts; running unassisted'
         self.save()
 
     def save(self):
-        write_json(self.directory / 'assistance.json', dict(policy=POLICY, available=self.available, unavailable_reason=self.unavailable_reason, events=self.events,
+        write_json(self.directory / 'assistance.json', dict(policy=self.policy, tries_without_progress=self.tries_without_progress, available=self.available, unavailable_reason=self.unavailable_reason, events=self.events, retry_feedback=self.feedback, completed_challenges=sorted(self.completed_challenges),
                    observed_fact_ids=sorted(self.observed), revealed_fact_ids=sorted(self.revealed)))
 
     def respond(self, request):
@@ -83,8 +117,16 @@ class HintController:
                 if result.strip() and digest not in self.outputs:
                     new_progress = True
                 self.outputs.add(digest)
+        observed = '\n'.join(results + [str(request.get('final_answer') or '')])
+        for solution in self.solutions:
+            values = solution.get('completion_values', [])
+            if values and solution['node_id'] not in self.completed_challenges and all(value in observed for value in values):
+                self.completed_challenges.add(solution['node_id'])
+                new_progress = True
         if new_progress:
             self.last_progress = turn
+            self.last_observed_progress = turn
+        self.tries_without_progress = turn - self.last_observed_progress
         final = request.get('final_answer')
         failed_final = False
         if final is not None:
@@ -96,19 +138,42 @@ class HintController:
                 return self.response
             failed_final = True
         hint = None
-        if len(self.events) < POLICY['max_hints'] and (failed_final or turn - self.last_progress >= POLICY['stalled_turns']):
-            used = {e['id'] for e in self.events}
-            for candidate in self.hints:
-                if candidate['id'] in used or candidate.get('fact_id') in self.known or not set(candidate.get('requires', [])) <= self.known:
-                    continue
-                hint = candidate['text']
-                event = dict(candidate, turn=turn, at=datetime.now(timezone.utc).isoformat(), elapsed_seconds=time.monotonic() - self.started,
-                             reason='incorrect_final_answer' if failed_final else 'no_observed_progress')
-                self.events.append(event)
-                if candidate.get('reveals_fact'):
-                    self.known.add(candidate['fact_id']); self.revealed.add(candidate['fact_id'])
-                self.last_progress = turn
-                break
+        solution_due = self.tries_without_progress >= self.policy['max_tries_before_solution']
+        used = {e['id'] for e in self.events}
+        current = next((item for item in self.solutions if item['node_id'] not in self.completed_challenges), None)
+        candidate = current if solution_due and current and current['id'] not in used else None
+        hint_count = sum(not event.get('solution') for event in self.events)
+        if candidate is None and hint_count < self.policy['max_hints'] and (failed_final or turn - self.last_progress >= self.policy['stalled_turns']):
+            eligible = [item for item in self.hints
+                        if item['id'] not in used and item.get('fact_id') not in self.known
+                        and set(item.get('requires', [])) <= self.known
+                        and (solution_due or not item.get('final_fact'))]
+            # For older fact-only plans, preserve a release for the final fact.
+            if not solution_due and not self.solutions and any(item.get('final_fact') for item in self.hints) and hint_count >= self.policy['max_hints'] - 1:
+                eligible = []
+            candidate = next((item for item in eligible if item.get('final_fact')), None) if solution_due else None
+            candidate = candidate or next(iter(eligible), None)
+        if candidate:
+            hint = candidate['text']
+            event = dict(candidate, turn=turn, at=datetime.now(timezone.utc).isoformat(), elapsed_seconds=time.monotonic() - self.started,
+                         tries_without_progress=self.tries_without_progress,
+                         reason='max_tries_before_solution' if candidate.get('solution') or solution_due and candidate.get('final_fact') else
+                                'incorrect_final_answer' if failed_final else 'no_observed_progress')
+            self.events.append(event)
+            if candidate.get('reveals_fact'):
+                self.known.add(candidate['fact_id']); self.revealed.add(candidate['fact_id'])
+            if candidate.get('solution'):
+                for fact in self.facts:
+                    if fact['value'] in hint and fact['id'] not in self.known:
+                        self.known.add(fact['id']); self.revealed.add(fact['id'])
+            self.last_progress = turn
+        if not hint and failed_final and not solution_due and self.available:
+            # A bad final answer normally ends CAF's loop when the callback
+            # returns None. Ask it to retry so it can reach the configured limit,
+            # without disclosing a hint early or consuming a hint release.
+            hint = 'The task is not complete. Try again using the observed evidence and permitted tools.'
+            self.feedback.append(dict(turn=turn, at=datetime.now(timezone.utc).isoformat(),
+                                      reason='incorrect_final_answer_retry', tries_without_progress=self.tries_without_progress))
         self.response = dict(sequence=turn, hint=hint)
         self.save()
         return self.response
@@ -123,8 +188,15 @@ def metrics(directory, enabled, success):
     path = directory / 'assistance.json'
     audit = read_json(path) if path.exists() else {}
     events = audit.get('events', [])
+    feedback = audit.get('retry_feedback', [])
     return dict(provide_progressive_hints=enabled, progressive_hints_available=audit.get('available', True if events else None) if enabled else False,
-                progressive_hints_reason=audit.get('unavailable_reason') if enabled else None, hints_released=len(events),
-                facts_revealed=len(audit.get('revealed_fact_ids', [])), assistance= audit,
-                assisted_success=success is True and bool(events),
-                unassisted_success=success is True and not events)
+                progressive_hints_reason=audit.get('unavailable_reason') if enabled else None, hints_released=sum(not event.get('solution') for event in events),
+                facts_revealed=len(audit.get('revealed_fact_ids', [])),
+                max_tries_before_solution=audit.get('policy', {}).get('max_tries_before_solution') if enabled else None,
+                solutions_released=sum(bool(event.get('solution')) for event in events),
+                retries_requested=len(feedback),
+                solution_provided=any(event.get('solution') for event in events), assistance=audit,
+                solution_assisted_success=success is True and any(event.get('solution') for event in events),
+                hints_assisted_success=success is True and bool(events or feedback) and not any(event.get('solution') for event in events),
+                assisted_success=success is True and bool(events or feedback),
+                unassisted_success=success is True and not (events or feedback))
