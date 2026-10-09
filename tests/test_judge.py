@@ -21,12 +21,18 @@ def endpoint():
                 self.send_response(200);self.end_headers();self.wfile.write(b'not JSON');return
             messages=body['messages']
             if len(messages)==2:
-                action={'action':'read_evidence','file':'worker-result.json','offset':0,'limit':6000}
+                plan=json.loads(messages[1]['content'])
+                filename=next(iter(plan['required_trace_files']),'worker-result.json')
+                action={'action':'read_evidence','file':filename,'offset':0,'limit':6000}
             else:
-                action={'action':'verdict','passed':True,'score':1,'reason':'Observed the expected final response.', 'evidence':['worker-result.json']}
+                filename=json.loads(messages[-1]['content'])['tool_result']['file']
+                action={'action':'verdict','passed':True,'score':1,'reason':'Observed the expected final response.', 'evidence':[filename]}
             if state['bad']=='path':action={'action':'read_evidence','file':'../../secret'}
             if state['bad']=='verdict':action={'action':'verdict','passed':'yes','score':1,'reason':'Done','evidence':[]}
             if state['bad']=='loop':action={'action':'read_evidence','file':'worker-result.json'}
+            if state['bad']=='skip_trace':
+                if len(messages)==2:action={'action':'read_evidence','file':'worker-result.json'}
+                else:action['evidence']=['worker-result.json']
             content=json.dumps(action)
             result={'message':{'content':content},'prompt_eval_count':20,'eval_count':10} if self.path.endswith('/api/chat') else {
                 'choices':[{'message':{'content':content}}],'usage':{'prompt_tokens':20,'completion_tokens':10}}
@@ -71,6 +77,61 @@ def test_evidence_tool_rejects_arbitrary_paths_and_symlinks(tmp_path):
     assert 'messages.json' not in evidence.files
     with pytest.raises(JudgeError):evidence.call({'action':'read_evidence','file':'/etc/passwd'})
     with pytest.raises(JudgeError):evidence.call({'action':'read_evidence','file':'worker-result.json','limit':100000})
+
+
+@pytest.mark.parametrize('trace',['events.jsonl','messages.json','runs/trial-1/transcript.md','runs/trial-1/tool_calls/001_curl.json','model_calls/call-000001.json','worker.log'])
+def test_judge_reads_execution_logs_before_verdict(tmp_path,endpoint,trace):
+    output=tmp_path/'guest-output'
+    log=output/trace
+    log.parent.mkdir(parents=True)
+    log.write_text(json.dumps({'tool':'curl','exit_code':0,'result':'observed-token'}))
+    write_json(tmp_path/'worker-result.json',{'final_answer':'observed-token'})
+    config=resolve_judge({'enabled':True,'model':{'provider':'openai','url':endpoint['url'],'name':'judge'}})
+    verdict=judge_trial(config,tmp_path,{'prompt':'Fetch the token','verifier':{'type':'contains_all','expected':['observed-token']}},'observed-token',{'passed':True})
+    assert verdict['evidence']==[trace]
+    audit=read_json(tmp_path/'judge.json')
+    assert audit['execution_trace_reviewed'] and audit['evidence_files_read']==[trace]
+    assert audit['evidence_warning'] is None
+    assert 'observed-token' in json.loads(audit['messages'][3]['content'])['tool_result']['content']
+
+
+def test_judge_cannot_skip_collected_execution_logs(tmp_path,endpoint):
+    endpoint['bad']='skip_trace'
+    (tmp_path/'events.jsonl').write_text('{"type":"tool_result","result":"actual output"}\n')
+    write_json(tmp_path/'worker-result.json',{'final_answer':'claim'})
+    config=resolve_judge({'enabled':True,'model':{'provider':'openai','url':endpoint['url'],'name':'judge'}})
+    with pytest.raises(JudgeError,match='execution log it read'):
+        judge_trial(config,tmp_path,{'prompt':'Task','verifier':{'type':'contains_all','expected':['claim']}},'claim',{'passed':True})
+    audit=read_json(tmp_path/'judge.json')
+    assert not audit['execution_trace_reviewed'] and audit['status']=='error'
+
+
+def test_empty_logs_are_reported_and_eof_does_not_count_as_evidence(tmp_path,endpoint):
+    (tmp_path/'events.jsonl').write_text('')
+    (tmp_path/'worker.log').write_text('')
+    write_json(tmp_path/'worker-result.json',{'final_answer':'claim'})
+    config=resolve_judge({'enabled':True,'model':{'provider':'openai','url':endpoint['url'],'name':'judge'}})
+    judge_trial(config,tmp_path,{'prompt':'Task','verifier':{'type':'contains_all','expected':['claim']}},'claim',{'passed':True})
+    audit=read_json(tmp_path/'judge.json')
+    assert audit['evidence_warning'] and not audit['execution_trace_reviewed']
+    evidence=Evidence(tmp_path)
+    evidence.call({'action':'read_evidence','file':'worker-result.json','offset':(tmp_path/'worker-result.json').stat().st_size})
+    assert not evidence.read
+
+
+def test_native_tool_records_are_required_and_large_outputs_can_be_paged(tmp_path):
+    run=tmp_path/'guest-output/runs/trial-1'
+    (run/'tool_calls').mkdir(parents=True)
+    tool=run/'tool_calls/001_curl.json'
+    tool.write_text('{"tool":"curl","result":"truncated"}')
+    (tmp_path/'guest-output/events.jsonl').write_text('{"type":"status"}')
+    artifact=run/'artifacts/001_curl_output.txt'
+    artifact.parent.mkdir()
+    artifact.write_text('x'*2_100_000+'observed-token')
+    evidence=Evidence(tmp_path)
+    assert evidence.required_trace_files==['runs/trial-1/tool_calls/001_curl.json']
+    result=evidence.call({'action':'read_evidence','file':'runs/trial-1/artifacts/001_curl_output.txt','offset':2_100_000,'limit':100})
+    assert result['content']=='observed-token' and not result['more']
 
 
 def test_official_openai_request_supports_reasoning_models(monkeypatch):

@@ -314,12 +314,13 @@ def test_runner_requires_judge_and_deterministic_checks(specification,tmp_path,m
         calls.append(config)
         if judge_errors:raise judge.JudgeError('Judge unavailable')
         if len(messages)==2:
-            return json.dumps({'action':'read_evidence','file':'worker-result.json'}),{'prompt_tokens':11,'output_tokens':5}
-        return json.dumps({'action':'verdict','passed':judge_passes,'score':1 if judge_passes else 0,'reason':'Checked saved evidence.','evidence':['worker-result.json']}),{'prompt_tokens':17,'output_tokens':7}
+            return json.dumps({'action':'read_evidence','file':'events.jsonl'}),{'prompt_tokens':11,'output_tokens':5}
+        return json.dumps({'action':'verdict','passed':judge_passes,'score':1 if judge_passes else 0,'reason':'Checked saved tool output.','evidence':['events.jsonl']}),{'prompt_tokens':17,'output_tokens':7}
     monkeypatch.setattr(judge,'_completion',completion)
     def worker(directory,seconds):
         inputs=read_json(directory/'input.json')
         assert 'judge' not in inputs
+        (directory/'events.jsonl').write_text(json.dumps({'type':'tool_result','tool':'curl','exit_code':0,'result':'answer' if answer_good else 'wrong'})+'\n')
         return {'status':'completed','final_answer':'answer' if answer_good else 'wrong'}
     # Use a known deterministic contract for both scheduled conditions.
     raw['tasks'][0]['verifier']={'type':'contains_all','expected':['answer']}
@@ -331,5 +332,7 @@ def test_runner_requires_judge_and_deterministic_checks(specification,tmp_path,m
         assert row['status']==('judge_error' if judge_errors else 'completed')
         assert row['judge_enabled'] and row['deterministic_passed']==answer_good
         assert row['judge_calls']==(1 if judge_errors else 2)
+        assert row['judge_execution_trace_reviewed']==(not judge_errors)
+        assert row['judge_evidence_files']==([] if judge_errors else ['events.jsonl'])
         assert (tmp_path/'judge-run'/row['attempt_path']/'judge.json').is_file()
         if not judge_errors:assert row['judge_prompt_tokens']==28 and row['judge_output_tokens']==12

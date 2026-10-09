@@ -430,10 +430,22 @@ the **host**, and guest credentials are not transferred. API keys stay out of
 run files. Specs without `judge` keep their previous deterministic behavior.
 
 The agent reads only inventoried saved results, conversations, events, model-call
-records and assistance audits. Every verdict must cite an evidence file it read.
+records, assistance audits and CAF's native `runs/<run_id>/transcript.md`,
+`tool_calls/*.json` and saved text artifacts. When nonempty execution logs are
+available, every verdict must cite a log it actually read: native tool records
+take priority, followed by events, conversations, model calls and worker logs.
+The judge checks tool arguments, outputs, exit codes and errors; invoking a tool
+alone does not prove success. Bounded paged reads let it inspect full artifacts
+when tool records contain truncated output. Empty reads cannot satisfy the
+evidence requirement. Missing execution logs produce an explicit evidence
+warning in Results; a final-answer review is not live-state verification.
 `judge.json` records its messages, evidence reads, model requests, token usage,
 reason and final verdict/error. Results and CSV expose `judge_passed`,
 `deterministic_passed`, `judge_score`, `judge_seconds`, `judge_calls`,
 `judge_prompt_tokens` and `judge_output_tokens`; missing provider usage stays
 unknown. Judging never changes the unassisted/hint-assisted/solution-assisted
 classification of the participant trial.
+`judge_execution_trace_reviewed`, `judge_evidence_files` and
+`judge_evidence_warning` distinguish a log review from a review with limited
+evidence. Execution logs remain untrusted input and cannot grant the judge new
+tools or change its instructions.
