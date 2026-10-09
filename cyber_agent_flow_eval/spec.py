@@ -55,16 +55,25 @@ def strings(value, label):
 def resolve(path):
     path = Path(path).resolve()
     spec = yaml.load(path.read_text(), Loader=StrictLoader)
-    fields(spec, ['version', 'id', 'engine', 'backend', 'orchestration', 'description', 'model', 'execution', 'repetitions', 'order_seed', 'tasks', 'suite', 'conditions', 'judge'],
+    fields(spec, ['version', 'id', 'engine', 'backend', 'orchestration', 'description', 'model', 'execution', 'repetitions', 'order_seed', 'tasks', 'suite', 'conditions', 'judge', 'pricing', 'reset'],
            ['version', 'id', 'engine', 'model', 'execution', 'conditions'], 'experiment')
     if type(spec['version']) is not int or spec['version'] != 1:
         raise ValueError('Only schema version 1 is supported')
     identifier(spec['id'])
+    if 'reset' in spec:
+        from .reset import resolve as resolve_reset
+        spec['reset'] = resolve_reset(spec['reset'], path.parent)
+    if 'pricing' in spec:
+        from .usage import validate_pricing
+        validate_pricing(spec['pricing'])
     if 'orchestration' in spec:
-        fields(spec['orchestration'], ['workflow_id', 'workflow_hash'], ['workflow_id', 'workflow_hash'], 'orchestration')
+        fields(spec['orchestration'], ['workflow_id', 'workflow_hash', 'scenario_definition_sha256'], ['workflow_id', 'workflow_hash'], 'orchestration')
         identifier(spec['orchestration']['workflow_id'])
         if not isinstance(spec['orchestration']['workflow_hash'], str) or not re.fullmatch(r'[0-9a-f]{64}', spec['orchestration']['workflow_hash']):
             raise ValueError('orchestration.workflow_hash must be a SHA-256 digest')
+        definition_hash = spec['orchestration'].get('scenario_definition_sha256')
+        if definition_hash is not None and (not isinstance(definition_hash,str) or not re.fullmatch(r'[0-9a-f]{64}',definition_hash)):
+            raise ValueError('orchestration.scenario_definition_sha256 must be a SHA-256 digest')
     from .backends import resolve_backend
     spec['backend'] = resolve_backend(spec.get('backend', {'type': 'local'}))
     from .engine import resolve_engine
@@ -136,7 +145,7 @@ def resolve(path):
         seen = set()
         for item in spec[kind]:
             if kind == 'tasks':
-                fields(item, ['id', 'prompt', 'family', 'split', 'scenario_id', 'verifier'],
+                fields(item, ['id', 'prompt', 'family', 'split', 'scenario_id', 'verifier', 'rubric', 'verification_mode'],
                        ['id', 'prompt', 'family', 'split', 'scenario_id', 'verifier'], 'task')
                 for key in ['prompt', 'family', 'scenario_id']:
                     if not isinstance(item[key], str) or not item[key]:
@@ -145,8 +154,21 @@ def resolve(path):
                     raise ValueError('Invalid task split')
                 verifier = item['verifier']
                 fields(verifier, ['type', 'expected'], ['type', 'expected'], 'verifier')
-                if verifier['type'] not in ['json_equals', 'contains_all', 'flags_match', 'flags_found']:
+                if verifier['type'] not in ['json_equals', 'contains_all', 'flags_match', 'flags_found', 'rubric']:
                     raise ValueError('Unsupported verifier')
+                from .rubric import MODES, validate_rubric
+                mode = item.get('verification_mode', 'judge' if verifier['type'] == 'rubric' else 'exact')
+                if mode not in MODES:
+                    raise ValueError('verification_mode must be exact, judge or both')
+                if verifier['type'] == 'rubric':
+                    item['rubric'] = validate_rubric(verifier['expected'])
+                    if mode != 'judge':
+                        raise ValueError('A rubric-only verifier requires judge mode')
+                if 'rubric' in item:
+                    item['rubric'] = validate_rubric(item['rubric'])
+                if mode in {'judge', 'both'}:
+                    if not item.get('rubric') or not spec.get('judge', {}).get('enabled'):
+                        raise ValueError('Judge/both mode requires a rubric and an enabled judge')
                 if verifier['type'] in {'flags_match', 'flags_found'}:
                     expected = verifier['expected']
                     if not isinstance(expected, dict) or not expected or any(
@@ -158,7 +180,9 @@ def resolve(path):
                     if not verifier['expected']:
                         raise ValueError('contains_all requires at least one check')
             else:
-                fields(item, ['id', 'tools', 'catalog', 'guidance_files'], ['id', 'tools', 'catalog'], 'condition')
+                fields(item, ['id', 'tools', 'catalog', 'guidance_files', 'provide_progressive_hints'], ['id', 'tools', 'catalog'], 'condition')
+                if 'provide_progressive_hints' in item and type(item['provide_progressive_hints']) is not bool:
+                    raise ValueError('Condition provide_progressive_hints must be boolean')
                 strings(item['tools'], 'tools')
                 if len(set(item['tools'])) != len(item['tools']):
                     raise ValueError('Duplicate tool selection')

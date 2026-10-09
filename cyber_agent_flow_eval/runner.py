@@ -94,6 +94,8 @@ def dependencies():
 
 
 def verify(answer, definition):
+    if definition['type'] == 'rubric':
+        return {'passed': None, 'checks': [], 'reason': 'Rubric requires evidence-based judge review'}
     if definition['type'] == 'flags_found':
         try:
             actual = json.loads(answer)
@@ -213,6 +215,8 @@ def export(output):
         from .hints import metrics
         if (path.parent / 'assistance.json').is_file():
             row.update(metrics(path.parent, True, row.get('verified_success')))
+            if row.get('guidance_supplied') and row.get('verified_success') is True:
+                row.update(unassisted_success=False, assisted_success=True)
         row['attempt_path'] = str(path.parent.relative_to(output))
         rows.append(row)
     # Nested JSONL is the authoritative dataset; CSV is a flat summary.
@@ -223,7 +227,11 @@ def export(output):
         stream.flush(); os.fsync(stream.fileno())
     temporary.replace(output / 'dataset.jsonl')
     columns = ['experiment_id', 'spec_hash', 'trial_id', 'pair_id', 'task_id', 'family', 'split',
-               'scenario_id', 'condition_id', 'artifact_hash', 'repetition', 'attempt', 'status',
+               'scenario_id', 'scenario_definition_sha256', 'condition_id', 'artifact_hash', 'repetition', 'attempt', 'status',
+               'task_outcome', 'execution_status', 'worker_status', 'judge_status', 'assistance_level',
+               'criterion_results', 'rubric_hash', 'rubric_version', 'verification_mode', 'reset_seconds',
+               'participant_prompt_tokens', 'participant_output_tokens', 'participant_cost_usd',
+               'judge_cost_usd', 'participant_usage_complete',
                'verified_success', 'judge_enabled', 'judge_passed', 'judge_score', 'judge_seconds', 'judge_calls', 'judge_prompt_tokens', 'judge_output_tokens', 'judge_execution_trace_reviewed', 'judge_evidence_warning', 'judge_evidence_files', 'deterministic_passed', 'judge_error', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hints_released', 'facts_revealed', 'max_tries_before_solution', 'solutions_released', 'solution_provided', 'retries_requested', 'solution_assisted_success', 'hints_assisted_success', 'assisted_success', 'unassisted_success', 'score', 'suite_id', 'package_hash', 'core_session_id', 'readiness_checked_at',
                'elapsed_seconds', 'execution_seconds', 'flags_observed', 'progress_score', 'time_to_first_flag_seconds', 'attempt_path']
     temporary = output / 'dataset.csv.tmp'
@@ -235,7 +243,7 @@ def export(output):
     return rows
 
 
-def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch, reservation=None, progress=print):
+def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch, reservation=None, progress=print, prepare_trial=None):
     spec = resolve(spec_path)
     from .backends import create_backend
     from .progress import record_progress
@@ -297,7 +305,7 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
                     write_json(existing[-1], previous)
                 elif not retry_failed or (previous['status'] == 'completed' and previous.get('verified_success') is True):
                     continue
-            if 'suite_snapshot' in spec:
+            if 'suite_snapshot' in spec and prepare_trial is None:
                 require_ready(spec['suite_snapshot'], spec['suite']['max_readiness_age_seconds'])
             task, condition = tasks[trial['task_id']], conditions[trial['condition_id']]
             number = len(existing) + 1
@@ -310,6 +318,8 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
                        usage_complete=False, nested_operation_telemetry_complete=False)
             if 'orchestration' in spec:
                 row['orchestration'] = spec['orchestration']
+                if spec['orchestration'].get('scenario_definition_sha256'):
+                    row['scenario_definition_sha256'] = spec['orchestration']['scenario_definition_sha256']
             if 'suite_snapshot' in spec:
                 snapshot = spec['suite_snapshot']
                 row.update(suite_id=snapshot['id'], package_hash=snapshot['package_hash'],
@@ -321,20 +331,41 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
             write_json(directory / 'catalog.json', condition['catalog_snapshot'])
             # Only participant-facing fields are passed to the engine worker.
             participant_execution = {key: value for key, value in spec['execution'].items() if key not in {'target_lock', 'progress_seconds', 'max_tries_before_solution'}}
+            hints_enabled = condition.get('provide_progressive_hints', spec['execution'].get('provide_progressive_hints', False))
+            participant_execution['provide_progressive_hints'] = hints_enabled
             participant = {'model': spec['model'], 'execution': participant_execution, 'engine': spec['engine'],
                            'prompt': task['prompt'], 'tools': condition['tools'],
                            'guidance': '\n\n'.join(g['text'] for g in condition['guidance_snapshot']),
                            'run_id': f'{trial["trial_id"]}-attempt-{number:04d}',
                            'server_command': shlex.join([spec['engine']['python'], str(Path(spec['engine']['path']) / 'mcp_kali.py')])}
+            if task.get('rubric') and 'Challenge requirements:' not in participant['prompt']:
+                from .rubric import participant_scaffold
+                participant['prompt'] += '\n\n' + participant_scaffold(task['rubric'])
             write_json(directory / 'input.json', participant)
             started = time.monotonic()
             try:
+                current_identity = backend.identities() if backend else dict(engine=source_identity(spec['engine']['path'])['engine'], runtime=runtime_identity(spec['engine']))
+                if current_identity['engine'] != identities['engine'] or current_identity['runtime'] != engine_runtime:
+                    raise PreparationError('CAF engine source or dependencies changed between trials')
+                if spec.get('reset'):
+                    from .reset import execute as reset_environment
+                    audit = reset_environment(spec['reset'], directory)
+                    row['reset_seconds'] = audit['seconds']
+                if prepare_trial is not None:
+                    reset_started = time.monotonic()
+                    audit = prepare_trial(directory, trial)
+                    if not isinstance(audit, dict) or audit.get('passed') is not True:
+                        raise PreparationError('Lab reset/readiness did not pass')
+                    row['reset_seconds'] = time.monotonic() - reset_started
+                    write_json(directory / 'reset.json', audit)
                 if backend:
+                    hook_started = time.monotonic()
                     backend.before_trial(directory)
+                    row['reset_seconds'] = row.get('reset_seconds', 0) + time.monotonic() - hook_started
                 execution_started = time.monotonic()
                 from .hints import HintController
                 hints = None
-                if spec['execution'].get('provide_progressive_hints', False):
+                if hints_enabled:
                     metadata = dict(spec.get('suite_snapshot', {}).get('task_metadata', {}).get(task['id'], {}), task_prompt=task['prompt'])
                     hints = HintController(directory, metadata, task['verifier'], spec['execution'])
                     if not hints.available:
@@ -346,13 +377,18 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
                 result = (backend.launch if backend else launcher)(directory, spec['execution']['wall_seconds'],
                          **({'hint_controller': hints} if hints else {}))
                 row.update(result)
+                row['worker_status'] = result['status']
                 write_json(directory / 'worker-result.json', result)
+                from .evidence_manifest import capture
+                capture(directory)
                 row.setdefault('execution_seconds', time.monotonic() - execution_started)
-                if result['status'] == 'completed':
+                if result['status'] == 'completed' or (task.get('rubric') and result['status'] in {'timeout', 'budget_exceeded'}):
                     evaluation = verify(result['final_answer'], task['verifier'])
                     prefix = 'guest-output/' if backend else ''
                     evaluation['evidence'] = [prefix + 'result.json', prefix + 'messages.json']
-                    if spec.get('judge', {}).get('enabled'):
+                    mode = task.get('verification_mode', 'judge' if task['verifier']['type'] == 'rubric' else 'both' if spec.get('judge', {}).get('enabled') else 'exact')
+                    row['verification_mode'] = mode
+                    if mode in {'judge', 'both'} and spec.get('judge', {}).get('enabled'):
                         from .judge import judge_trial, JudgeError
                         if progress is not None:
                             progress(f'{trial["trial_id"]}: judge agent reviewing saved trial evidence')
@@ -361,15 +397,20 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
                         try:
                             verdict = judge_trial(spec['judge'], directory, task, result['final_answer'], deterministic,
                                                   progress=(lambda message: progress(f'{trial["trial_id"]}: judge {message}')) if progress is not None else None)
+                            if task.get('rubric'):
+                                row.update(rubric_hash=verdict['rubric_hash'],rubric_version=verdict['rubric_version'])
                             row.update(judge_passed=verdict['passed'], judge_score=verdict['score'], judge_reason=verdict['reason'])
+                            passed = verdict['passed'] if mode == 'judge' or verdict['passed'] is None else (False if deterministic['passed'] is False else verdict['passed'])
                             evaluation = dict(deterministic=deterministic, judge=verdict,
-                                              passed=deterministic['passed'] and verdict['passed'],
-                                              score=min(deterministic.get('score', 1 if deterministic['passed'] else 0),verdict['score']),
-                                              evidence=[*deterministic['evidence'],'judge.json'])
+                                              passed=passed,
+                                              score=verdict['score'] if mode == 'judge' else min(deterministic.get('score', 1 if deterministic['passed'] else 0),verdict['score']),
+                                              outcome=verdict.get('outcome', 'success' if passed else 'fail') if passed is not False else ('partial' if verdict['score'] > 0 else 'fail'),
+                                              criteria=verdict.get('criteria', []), evidence=[*deterministic['evidence'],'judge.json'])
                         except JudgeError as exc:
-                            row.update(status='judge_error', worker_status='completed', judge_error=str(exc), errors=[str(exc)])
+                            row.update(status='judge_error', judge_error=str(exc), errors=[str(exc)])
                             evaluation = dict(deterministic=deterministic, passed=None, judge_error=str(exc), evidence=['judge.json'])
                         audit = read_json(directory / 'judge.json')
+                        row['judge_status'] = audit['status']
                         row.update(judge_seconds=audit['elapsed_seconds'], judge_calls=len(audit['calls']))
                         row.update(judge_execution_trace_reviewed=audit['execution_trace_reviewed'],
                                    judge_evidence_warning=audit['evidence_warning'], judge_evidence_files=audit['evidence_files_read'])
@@ -378,6 +419,8 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
                             row[field]=sum(values) if values and all(type(value) is int for value in values) else None
                     write_json(directory / 'evaluation.json', evaluation)
                     row['verified_success'] = evaluation['passed']
+                    row['task_outcome'] = evaluation.get('outcome', 'unverified' if evaluation['passed'] is None else 'success' if evaluation['passed'] else 'partial' if evaluation.get('score', 0) > 0 else 'fail')
+                    row['criterion_results'] = evaluation.get('criteria', [])
                     if 'score' in evaluation:
                         row['score'] = evaluation['score']
             except CleanupError as exc:
@@ -393,7 +436,16 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
                 row.update(status='error', errors=[f'{type(exc).__name__}: {exc}'])
             finally:
                 from .hints import metrics
-                row.update(metrics(directory, spec['execution'].get('provide_progressive_hints', False), row.get('verified_success')))
+                row.update(metrics(directory, hints_enabled, row.get('verified_success')))
+                from .usage import collect
+                row.update(collect(directory, row, spec.get('pricing', {})))
+                row.setdefault('task_outcome', 'unverified')
+                row['execution_status'] = row.get('worker_status', row['status'])
+                row['guidance_supplied'] = bool(condition['guidance_snapshot'])
+                row['assistance_level'] = 'solution' if row.get('solutions_released') else 'hints' if row.get('hints_released') or row.get('facts_revealed') or row.get('retries_requested') else 'guidance' if row['guidance_supplied'] else 'none'
+                if row['guidance_supplied'] and row.get('verified_success') is True:
+                    row['unassisted_success'] = False
+                    row['assisted_success'] = True
                 row.update(ended_at=timestamp(), elapsed_seconds=time.monotonic() - started)
                 row.update(record_progress(directory, task['verifier'], spec['execution']['progress_seconds']))
                 write_json(directory / 'attempt.json', row)

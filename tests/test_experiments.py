@@ -276,7 +276,7 @@ async def test_unattended_execution_passes_dangerous_flag(tmp_path, monkeypatch)
     assert received == [True]
 
 
-def test_empty_progressive_hint_plan_runs_and_reports_unassisted(specification,tmp_path):
+def test_empty_hint_plan_distinguishes_upfront_guidance(specification,tmp_path):
     raw=yaml.safe_load(specification.read_text())
     raw['execution']['provide_progressive_hints']=True
     raw['execution']['max_tries_before_solution']=4
@@ -290,7 +290,9 @@ def test_empty_progressive_hint_plan_runs_and_reports_unassisted(specification,t
     rows=run(specification,tmp_path/'no-hints',launcher=worker,progress=messages.append)
     assert all(row['status']=='completed' and row['verified_success'] for row in rows)
     assert all(row['progressive_hints_available'] is False and row['hints_released']==0 for row in rows)
-    assert all(row['unassisted_success'] and not row['assisted_success'] for row in rows)
+    for row in rows:
+        assert row['unassisted_success'] is (not row['guidance_supplied'])
+        assert row['assisted_success'] is row['guidance_supplied']
     assert any('progressive hints unavailable' in message for message in messages)
 
 

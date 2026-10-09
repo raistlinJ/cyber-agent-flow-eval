@@ -25,7 +25,7 @@ def load_suite(path):
     manifest = json.loads((root / 'manifest.json').read_text())
     if not isinstance(manifest, dict):
         raise ValueError('ScenarioForge manifest must be an object')
-    if manifest.get('format') != 'scenarioforge-evaluation' or manifest.get('version') not in {1, 2, 3}:
+    if manifest.get('format') != 'scenarioforge-evaluation' or manifest.get('version') not in {1, 2, 3, 4}:
         raise ValueError('Unsupported ScenarioForge evaluation package format/version')
     original = dict(manifest)
     package_hash = original.pop('package_hash', None)
@@ -78,11 +78,13 @@ def load_suite(path):
         requirements = metadata[task['id']].get('required_checks')
         if not isinstance(requirements, list) or not requirements or any(not isinstance(v, str) or not v for v in requirements):
             raise ValueError('Task lacks required readiness checks')
-        tasks.append(dict(task, verifier=verifiers[task['id']]))
+        extra = {key: metadata[task['id']][key] for key in ('rubric', 'verification_mode') if key in metadata[task['id']]}
+        tasks.append(dict(task, verifier=verifiers[task['id']], **extra))
     ids = [t['id'] for t in tasks]
     if len(set(ids)) != len(ids) or set(ids) != set(verifiers) or set(ids) != set(metadata):
         raise ValueError('Participant/evaluator task IDs do not match uniquely')
     snapshot = {'id': manifest['id'], 'package_hash': package_hash, 'scenario': scenario,
+                'producer': manifest.get('producer'),
                 'files': manifest['files'], 'task_metadata': metadata,
                 'readiness': contents['evaluator/readiness.json'], 'graph': graph}
     return tasks, snapshot
@@ -202,7 +204,8 @@ def require_discovery_separation(spec):
         return
     if spec['execution']['reveal_network_policy']:
         raise ValueError('Discovery evaluation requires reveal_network_policy: false')
-    public = json.dumps({'tasks': [{k: v for k, v in t.items() if k != 'verifier'} for t in spec['tasks']],
+    from .rubric import public_rubric
+    public = json.dumps({'tasks': [{k: public_rubric(v) if k == 'rubric' else v for k, v in t.items() if k != 'verifier'} for t in spec['tasks']],
                          'conditions': spec['conditions']})
     for definition in discovery:
         for fact in definition.get('discoverable_facts', []):

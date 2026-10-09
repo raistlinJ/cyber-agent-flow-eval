@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:cyber-agent-flow:challenge-rubric:1",
+  "title": "Challenge rubric v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "criteria"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "criteria": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "requirement",
+          "evidence"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,79}$"
+          },
+          "requirement": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "evidence": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4000
+          },
+          "essential": {
+            "type": "boolean",
+            "default": true
+          },
+          "weight": {
+            "type": "number",
+            "exclusiveMinimum": 0,
+            "maximum": 100,
+            "default": 1
+          },
+          "private_reference": {
+            "type": "string",
+            "maxLength": 8000
+          }
+        }
+      },
+      "contains": {
+        "anyOf": [
+          {
+            "properties": {
+              "essential": {
+                "const": true
+              }
+            },
+            "required": [
+              "essential"
+            ]
+          },
+          {
+            "not": {
+              "required": [
+                "essential"
+              ]
+            }
+          }
+        ]
+      },
+      "minContains": 1
+    }
+  }
+}

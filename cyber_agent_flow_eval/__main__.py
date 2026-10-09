@@ -48,9 +48,23 @@ def main(argv=None):
     logs.add_argument('--trial', required=True)
     logs.add_argument('--attempt', type=int)
     logs.add_argument('--lines', type=int, default=100)
+    study=commands.add_parser('study',help='Run or summarize a collection of scenario experiments')
+    study.add_argument('--config',help='Study YAML with experiment paths')
+    study.add_argument('--output',required=True)
+    study.add_argument('--resume',action='store_true')
+    study.add_argument('--evaluations',nargs='+',help='Summarize existing evaluation directories')
+    study.add_argument('--baseline',default='baseline')
     args = parser.parse_args(argv)
     try:
-        if args.command in {'list', 'status', 'results', 'logs'}:
+        if args.command=='study':
+            from . import studies
+            from .storage import write_json
+            from pathlib import Path
+            if bool(args.config)==bool(args.evaluations):raise ValueError('Specify study config or existing evaluations')
+            report=studies.run(args.config,args.output,resume=args.resume) if args.config else studies.summarize(args.evaluations,args.baseline)
+            if args.evaluations:write_json(Path(args.output)/'study-summary.json',report)
+            print(json.dumps(report,indent=2))
+        elif args.command in {'list', 'status', 'results', 'logs'}:
             from . import reporting
             if args.command == 'list':
                 result = reporting.list_runs(args.root)

@@ -449,3 +449,50 @@ classification of the participant trial.
 `judge_evidence_warning` distinguish a log review from a review with limited
 evidence. Execution logs remain untrusted input and cannot grant the judge new
 tools or change its instructions.
+
+## Evidence-based challenge evaluation and studies
+
+Tasks can select `verification_mode: judge`, `exact`, or `both`. Judge-only tasks
+use a version 1 challenge rubric instead of an expected final answer, so successful
+actions can be established from tool output without flags or a prescribed file
+location. The agent receives public requirements and an evidence-report scaffold;
+private references remain on the evaluator host. The independent judge cites byte
+ranges it read from collected execution evidence. Host code computes essential
+criterion success, partial completion, failure, or unverified outcomes. Judge
+failure or missing evidence never becomes a pass.
+
+Execution health, outcome, assistance, reset time, provider-reported tokens and
+costs are separate dataset fields. CAF tool records carry stable evidence IDs and
+full-output hashes. `evidence-manifest.json` inventories collected file hashes;
+`judge.json` retains the judge configuration, prompt, conversation and citations.
+Unknown usage/pricing remains unknown. Set optional `pricing.participant` and
+`pricing.judge` to `{input_per_million: USD, output_per_million: USD}` and optionally
+`pricing.generation_cost_usd` for a recorded generation bill.
+
+The [rubric schema](schemas/challenge-rubric-v1.schema.json) and
+[authoring, scoring, reset and study guide](../cyber-agent-flow-orchestrator/docs/rubric-experiments.md)
+describe the contract. ScenarioForge version 4 packages import these definitions;
+neither ScenarioForge nor the orchestrator is required to author a standalone
+local experiment. Define the rubric in `verifier.expected` with `type: rubric` and
+set `verification_mode: judge`, plus an enabled `judge` configuration.
+
+Standalone studies run YAML-defined experiments sequentially:
+
+```bash
+cyber-agent-flow-eval study --config study.yaml --output study-runs
+cyber-agent-flow-eval study --evaluations run-a run-b --output study-report
+```
+
+`study.yaml` supplies `version: 1`, `id`, `baseline`, `bootstrap_seed` and a list of
+`experiments` (YAML paths). Each experiment needs an explicit `reset` command or
+guest `before_trial` reset/readiness hooks. A host reset has `argv`, `cwd`, and
+`timeout_seconds`; scripts are hashed and rechecked before execution. Reset failure
+blocks execution; timed-out process groups are killed on POSIX hosts.
+
+Studies require matching model/judge/budget/condition selections and disjoint
+scenario families across development/validation/test. Paired differences and
+bootstrap intervals resample scenario clusters, not repetitions. Missing evidence
+and counterparts remain explicit exclusions. Small samples or no observed
+variation do not produce an estimable interval. Automated judge accuracy is not
+human calibrated; these reports support reproducible experiments, not a claim of
+validated judge correctness.

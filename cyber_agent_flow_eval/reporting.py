@@ -50,6 +50,8 @@ def attempts(output, *, all_attempts=False):
         from .hints import metrics
         if within(root, path.parent / 'assistance.json').is_file():
             row.update(metrics(path.parent, True, row.get('verified_success')))
+            if row.get('guidance_supplied') and row.get('verified_success') is True:
+                row.update(unassisted_success=False, assisted_success=True)
         row['attempt_path'] = str(path.parent.relative_to(root))
         rows.append(row)
     rows.sort(key=lambda r: (r['trial_id'], int(r['attempt'])))
@@ -66,7 +68,7 @@ def mean(rows, key):
 
 def summarize(rows):
     completed = [r for r in rows if r['status'] == 'completed']
-    verified = [r for r in completed if type(r.get('verified_success')) is bool]
+    verified = [r for r in rows if type(r.get('verified_success')) is bool]
     passed = sum(r['verified_success'] for r in verified)
     return {'trials_observed': len(rows), 'status_counts': dict(Counter(r['status'] for r in rows)),
             'verified_trials': len(verified), 'verified_successes': passed,
@@ -74,11 +76,22 @@ def summarize(rows):
             'hints_assisted_successes': sum(bool(r.get('hints_assisted_success', r.get('assisted_success') and not r.get('solution_provided'))) for r in verified),
             'solutions_released': sum(r.get('solutions_released', 0) for r in rows),
             'assisted_successes': sum(bool(r.get('assisted_success')) for r in verified),
+            'guidance_assisted_successes': sum(r.get('verified_success') is True and r.get('assistance_level')=='guidance' for r in verified),
             'unassisted_successes': sum(bool(r.get('unassisted_success', r['verified_success'] and not (r.get('hints_released') or r.get('solutions_released') or r.get('solution_provided') or r.get('retries_requested') or r.get('assisted_success'))) ) for r in verified),
             'hints_released': sum(r.get('hints_released', 0) for r in rows),
             'facts_revealed': sum(r.get('facts_revealed', 0) for r in rows),
             'success_rate': passed / len(verified) if verified else None,
-            'mean_score': mean(completed, 'score'),
+            'mean_score': mean(verified, 'score'),
+            'task_outcomes': dict(Counter(r.get('task_outcome', 'unverified' if r.get('verified_success') is None else 'success' if r['verified_success'] else 'fail') for r in rows)),
+            'assistance_levels': dict(Counter(r.get('assistance_level','none') for r in rows)),
+            'evaluable_trials': len(verified), 'unverified_trials': len(rows)-len(verified),
+            'evaluation_coverage': len(verified)/len(rows) if rows else None,
+            'mean_reset_seconds': mean(rows,'reset_seconds'),
+            'mean_participant_cost_usd': mean(rows,'participant_cost_usd'),
+            'mean_judge_cost_usd': mean(rows,'judge_cost_usd'),
+            'participant_usage_complete_trials': sum(bool(r.get('participant_usage_complete')) for r in rows),
+            'judge_prompt_tokens': sum(r['judge_prompt_tokens'] for r in rows if r.get('judge_enabled')) if any(r.get('judge_enabled') for r in rows) and all(type(r.get('judge_prompt_tokens')) is int for r in rows if r.get('judge_enabled')) else None,
+            'judge_output_tokens': sum(r['judge_output_tokens'] for r in rows if r.get('judge_enabled')) if any(r.get('judge_enabled') for r in rows) and all(type(r.get('judge_output_tokens')) is int for r in rows if r.get('judge_enabled')) else None,
             'judge_reviews': sum(bool(row.get('judge_enabled')) for row in rows),
             'judge_errors': sum(row.get('status')=='judge_error' for row in rows),
             'mean_judge_seconds': mean(rows, 'judge_seconds'),
@@ -99,12 +112,20 @@ def results(output, *, all_attempts=False):
         grouped[condition['id']]
     planned = len(data['schedule'])
     observed = {r['trial_id'] for r in latest}
-    return {'output': str(root), 'experiment_id': data['spec']['id'], 'spec_hash': data['spec_hash'],
+    summaries = {name:summarize(grouped[name]) for name in sorted(grouped)}
+    for name,summary in summaries.items():
+        summary['planned_trials'] = (sum(t['condition_id']==name for t in data['schedule'])
+                                    if all('condition_id' in t for t in data['schedule']) else None)
+        summary['success_rate_all_planned'] = summary['verified_successes']/summary['planned_trials'] if summary['planned_trials'] else None
+        summary['unstarted_trials'] = summary['planned_trials']-summary['trials_observed'] if summary['planned_trials'] is not None else None
+    from .studies import compare
+    comparisons = compare(latest, next(iter(data['spec'].get('conditions', [])), {'id':'baseline'})['id'], seed=data['spec'].get('order_seed',0))
+    return {'paired_comparisons':comparisons, 'output': str(root), 'experiment_id': data['spec']['id'], 'spec_hash': data['spec_hash'],
             'coordinator_active': active(root / '.coordinator.lock'),
             'planned_trials': planned, 'unstarted_trials': sum(t['trial_id'] not in observed for t in data['schedule']),
             'attempt_count': len(rows), 'summary_basis': 'latest attempt per trial',
             'summary': summarize(latest),
-            'conditions': {name: summarize(grouped[name]) for name in sorted(grouped)},
+            'conditions': summaries,
             'attempts': rows if all_attempts else latest}
 
 
@@ -160,7 +181,7 @@ def write_export(directory, report):
         for row in rows:
             stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + '\n')
     columns = ['experiment_id', 'trial_id', 'condition_id', 'task_id', 'repetition', 'attempt', 'status',
-               'verified_success', 'judge_enabled', 'judge_passed', 'judge_score', 'judge_seconds', 'judge_calls', 'judge_prompt_tokens', 'judge_output_tokens', 'judge_execution_trace_reviewed', 'judge_evidence_warning', 'judge_evidence_files', 'deterministic_passed', 'judge_error', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hints_released', 'facts_revealed', 'max_tries_before_solution', 'solutions_released', 'solution_provided', 'retries_requested', 'solution_assisted_success', 'hints_assisted_success', 'assisted_success', 'unassisted_success', 'score', 'execution_seconds', 'elapsed_seconds', 'progress_score',
+               'verified_success', 'judge_enabled', 'judge_passed', 'judge_score', 'judge_seconds', 'judge_calls', 'judge_prompt_tokens', 'judge_output_tokens', 'judge_execution_trace_reviewed', 'judge_evidence_warning', 'judge_evidence_files', 'deterministic_passed', 'judge_error', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hints_released', 'facts_revealed', 'max_tries_before_solution', 'solutions_released', 'solution_provided', 'retries_requested', 'solution_assisted_success', 'hints_assisted_success', 'assisted_success', 'unassisted_success', 'score', 'execution_seconds', 'elapsed_seconds', 'task_outcome', 'execution_status', 'worker_status', 'judge_status', 'assistance_level', 'criterion_results', 'rubric_hash', 'rubric_version', 'scenario_definition_sha256', 'verification_mode', 'reset_seconds', 'participant_prompt_tokens', 'participant_output_tokens', 'participant_cost_usd', 'judge_cost_usd', 'participant_usage_complete', 'progress_score',
                'time_to_first_flag_seconds', 'artifact_hash', 'spec_hash', 'attempt_path']
     with (directory / 'dataset.csv').open('x', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=columns, extrasaction='ignore')

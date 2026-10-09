@@ -48,7 +48,8 @@ class HintController:
         self.hints = []
         self.solutions = []
         self.completed_challenges = set()
-        answers = list(strings(verifier.get('expected')))
+        answers = ([c['private_reference'] for c in verifier['expected']['criteria'] if c.get('private_reference')]
+                   if verifier['type'] == 'rubric' else list(strings(verifier.get('expected'))))
         def safe(text):
             return not any(answer and answer in text for answer in answers)
         for index, text in enumerate(metadata.get('progressive_hints', [])):
@@ -82,7 +83,7 @@ class HintController:
             self.solutions.append(dict(item, id='solution-' + item['node_id'], source='scenario_solution', solution=True))
         # Older packages and the samples can still provide the reviewed task
         # procedure and exact verifier answer when no facilitator section exists.
-        if not self.solutions and self.hints and metadata.get('progressive_hints'):
+        if not self.solutions and self.hints and metadata.get('progressive_hints') and verifier['type'] != 'rubric':
             walkthrough = metadata.get('task_prompt') or '\n'.join(metadata['progressive_hints'])
             self.solutions.append(dict(id='solution-task',node_id='task',source='scenario_solution',solution=True,
                 completion_values=[],text='Solution walkthrough:\n' + walkthrough +
@@ -132,7 +133,7 @@ class HintController:
         if final is not None:
             from .runner import verify
             # Do not interrupt a correct final answer or judge truncated answers.
-            if request.get('final_truncated') or verify(final, self.verifier)['passed']:
+            if self.verifier['type'] == 'rubric' or request.get('final_truncated') or verify(final, self.verifier)['passed']:
                 self.response = dict(sequence=turn, hint=None)
                 self.save()
                 return self.response
