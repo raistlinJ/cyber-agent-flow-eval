@@ -496,3 +496,5 @@ and counterparts remain explicit exclusions. Small samples or no observed
 variation do not produce an estimable interval. Automated judge accuracy is not
 human calibrated; these reports support reproducible experiments, not a claim of
 validated judge correctness.
+
+For Both verification with a rubric, the score records weighted criterion completion; the exact check remains a separate gate on verified success. Incorrect final JSON can receive completion credit without passing. JSON-only prompts keep their required response shape; evidence is available to the judge in execution logs.

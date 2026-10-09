@@ -100,9 +100,10 @@ def participant_scaffold(value):
         for c in criteria
     ]
     lines += [
-        "Report findings for each criterion with supporting tool-call evidence IDs (or tool names and observed output).",
+        "Assess each criterion against observed tool output. When the requested answer format permits, cite supporting tool-call evidence IDs (or tool names and observed output).",
+        "Preserve the task's required final answer format. For JSON-only tasks, do not add evidence fields, explanations or Markdown; the evaluator can use the recorded execution logs.",
         "Evidence may be tool responses or command output; saving a file is not required.",
-        "Clearly state unmet requirements. Your own claim is not evidence. Do not invent evidence IDs.",
+        "State unmet requirements only when the requested answer format permits. Your own claim is not evidence. Do not invent evidence IDs.",
     ]
     return "\n".join(lines)
 

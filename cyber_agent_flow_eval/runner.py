@@ -403,7 +403,7 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
                             passed = verdict['passed'] if mode == 'judge' or verdict['passed'] is None else (False if deterministic['passed'] is False else verdict['passed'])
                             evaluation = dict(deterministic=deterministic, judge=verdict,
                                               passed=passed,
-                                              score=verdict['score'] if mode == 'judge' else min(deterministic.get('score', 1 if deterministic['passed'] else 0),verdict['score']),
+                                              score=verdict['score'] if task.get('rubric') else min(deterministic.get('score', 1 if deterministic['passed'] else 0),verdict['score']),
                                               outcome=verdict.get('outcome', 'success' if passed else 'fail') if passed is not False else ('partial' if verdict['score'] > 0 else 'fail'),
                                               criteria=verdict.get('criteria', []), evidence=[*deterministic['evidence'],'judge.json'])
                         except JudgeError as exc:
