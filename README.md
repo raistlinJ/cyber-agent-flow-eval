@@ -400,3 +400,40 @@ transport. Optional progress-write failures cannot bypass worker cleanup; the
 initial recovery journal remains mandatory before any guest mutation.
 
 Optional `execution.provide_progressive_hints: true` enables host-controlled assistance for ScenarioForge suites. The default is false. Task metadata supplies private `progressive_hints` (ordered strings, e.g. reviewed facilitator excerpts) and/or `discoverable_facts`. No complete guide or unreleased plan is uploaded to the participant. After two turns without new observed fact evidence (or new successful output for tasks without declared facts), or an incorrect final answer, up to three ordinary hints are released within existing budgets. `execution.max_tries_before_solution` (default 6, range 1–1,000) controls how many agent turns without new progress precede the **current challenge's facilitator walkthrough and exact answer/flag**. New progress resets this count; hint releases do not. Full solutions are kept separately in private `challenge_solutions` metadata and released at most once per challenge. Observed flags advance to the next unsolved challenge and reset its try count. Older packages with authored hints fall back to the reviewed task procedure/hints and verifier answer. Incorrect final answers before the limit can receive neutral retry feedback, audited as `retry_feedback` / `retries_requested`. Ordinary hints still exclude literal verifier answers; the gated solution deliberately includes them. Results separate `unassisted_success`, `hints_assisted_success` and `solution_assisted_success`, and record `solution_provided` / `solutions_released`. A success following answer disclosure is never classified as unassisted or hints-only success. Updated CAF `chat(progress_callback=...)` support is required when assistance is enabled and usable guidance is available. Results/CSV distinguish `hints_released`, `facts_revealed`, `assisted_success`, and `unassisted_success`; `assistance.json` preserves the policy and timestamped release audit. Releases are counted conservatively even if transport fails before delivery. If a task has no usable hint source, it runs unassisted and explicitly records `progressive_hints_available: false` with a reason; this does not fail the trial. Authored ordinary hints containing verifier answers still fail validation.
+
+### Judge agent
+
+An optional host-side `judge` configuration enables an LLM agent that reviews
+saved trial evidence through bounded read-only tools. It does not run commands
+or perform live VM checks. The final pass requires **both** its verdict and the
+deterministic output verifier. Judge errors are recorded as `judge_error` with
+`verified_success: null`; no silent success fallback occurs.
+
+```yaml
+judge:
+  enabled: true
+  model:
+    provider: openai  # openai, litellm, or ollama_direct
+    url: http://judge-server:11434/v1
+    name: judge-model
+    ssl_verify: true
+    # Optional: set this in the coordinator/orchestrator's environment.
+    api_key_env: JUDGE_API_KEY
+  max_turns: 6          # evidence reads plus verdict, 2–32
+  timeout_seconds: 120 # total judge budget, independent of worker wall_seconds
+  max_tokens: 2048     # output tokens per model request
+```
+
+Alternatively, `judge: {enabled: true, use_participant_model: true}` freezes the
+participant's model settings for judging; the endpoint must be reachable from
+the **host**, and guest credentials are not transferred. API keys stay out of
+run files. Specs without `judge` keep their previous deterministic behavior.
+
+The agent reads only inventoried saved results, conversations, events, model-call
+records and assistance audits. Every verdict must cite an evidence file it read.
+`judge.json` records its messages, evidence reads, model requests, token usage,
+reason and final verdict/error. Results and CSV expose `judge_passed`,
+`deterministic_passed`, `judge_score`, `judge_seconds`, `judge_calls`,
+`judge_prompt_tokens` and `judge_output_tokens`; missing provider usage stays
+unknown. Judging never changes the unassisted/hint-assisted/solution-assisted
+classification of the participant trial.

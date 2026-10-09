@@ -55,7 +55,7 @@ def strings(value, label):
 def resolve(path):
     path = Path(path).resolve()
     spec = yaml.load(path.read_text(), Loader=StrictLoader)
-    fields(spec, ['version', 'id', 'engine', 'backend', 'orchestration', 'description', 'model', 'execution', 'repetitions', 'order_seed', 'tasks', 'suite', 'conditions'],
+    fields(spec, ['version', 'id', 'engine', 'backend', 'orchestration', 'description', 'model', 'execution', 'repetitions', 'order_seed', 'tasks', 'suite', 'conditions', 'judge'],
            ['version', 'id', 'engine', 'model', 'execution', 'conditions'], 'experiment')
     if type(spec['version']) is not int or spec['version'] != 1:
         raise ValueError('Only schema version 1 is supported')
@@ -97,6 +97,9 @@ def resolve(path):
         raise ValueError('api_key_env must name an environment variable')
     if 'ssl_verify' in model and type(model['ssl_verify']) is not bool:
         raise ValueError('ssl_verify must be boolean')
+    from .judge import resolve_judge
+    if 'judge' in spec:
+        spec['judge'] = resolve_judge(spec['judge'], model)
     execution = spec['execution']
     fields(execution, ['wall_seconds', 'max_turns', 'tool_timeout', 'context_window', 'network_policy', 'target_lock', 'reveal_network_policy', 'progress_seconds', 'provide_progressive_hints', 'auto_approve_dangerous', 'max_tries_before_solution'],
            ['wall_seconds', 'max_turns', 'network_policy', 'target_lock'], 'execution')

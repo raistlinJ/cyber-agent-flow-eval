@@ -224,7 +224,7 @@ def export(output):
     temporary.replace(output / 'dataset.jsonl')
     columns = ['experiment_id', 'spec_hash', 'trial_id', 'pair_id', 'task_id', 'family', 'split',
                'scenario_id', 'condition_id', 'artifact_hash', 'repetition', 'attempt', 'status',
-               'verified_success', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hints_released', 'facts_revealed', 'max_tries_before_solution', 'solutions_released', 'solution_provided', 'retries_requested', 'solution_assisted_success', 'hints_assisted_success', 'assisted_success', 'unassisted_success', 'score', 'suite_id', 'package_hash', 'core_session_id', 'readiness_checked_at',
+               'verified_success', 'judge_enabled', 'judge_passed', 'judge_score', 'judge_seconds', 'judge_calls', 'judge_prompt_tokens', 'judge_output_tokens', 'deterministic_passed', 'judge_error', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hints_released', 'facts_revealed', 'max_tries_before_solution', 'solutions_released', 'solution_provided', 'retries_requested', 'solution_assisted_success', 'hints_assisted_success', 'assisted_success', 'unassisted_success', 'score', 'suite_id', 'package_hash', 'core_session_id', 'readiness_checked_at',
                'elapsed_seconds', 'execution_seconds', 'flags_observed', 'progress_score', 'time_to_first_flag_seconds', 'attempt_path']
     temporary = output / 'dataset.csv.tmp'
     with temporary.open('w', newline='') as stream:
@@ -346,11 +346,34 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
                 result = (backend.launch if backend else launcher)(directory, spec['execution']['wall_seconds'],
                          **({'hint_controller': hints} if hints else {}))
                 row.update(result)
+                write_json(directory / 'worker-result.json', result)
                 row.setdefault('execution_seconds', time.monotonic() - execution_started)
                 if result['status'] == 'completed':
                     evaluation = verify(result['final_answer'], task['verifier'])
                     prefix = 'guest-output/' if backend else ''
                     evaluation['evidence'] = [prefix + 'result.json', prefix + 'messages.json']
+                    if spec.get('judge', {}).get('enabled'):
+                        from .judge import judge_trial, JudgeError
+                        if progress is not None:
+                            progress(f'{trial["trial_id"]}: judge agent reviewing saved trial evidence')
+                        deterministic = dict(evaluation)
+                        row.update(judge_enabled=True, deterministic_passed=deterministic['passed'])
+                        try:
+                            verdict = judge_trial(spec['judge'], directory, task, result['final_answer'], deterministic,
+                                                  progress=(lambda message: progress(f'{trial["trial_id"]}: judge {message}')) if progress is not None else None)
+                            row.update(judge_passed=verdict['passed'], judge_score=verdict['score'], judge_reason=verdict['reason'])
+                            evaluation = dict(deterministic=deterministic, judge=verdict,
+                                              passed=deterministic['passed'] and verdict['passed'],
+                                              score=min(deterministic.get('score', 1 if deterministic['passed'] else 0),verdict['score']),
+                                              evidence=[*deterministic['evidence'],'judge.json'])
+                        except JudgeError as exc:
+                            row.update(status='judge_error', worker_status='completed', judge_error=str(exc), errors=[str(exc)])
+                            evaluation = dict(deterministic=deterministic, passed=None, judge_error=str(exc), evidence=['judge.json'])
+                        audit = read_json(directory / 'judge.json')
+                        row.update(judge_seconds=audit['elapsed_seconds'], judge_calls=len(audit['calls']))
+                        for source, field in [('prompt_tokens','judge_prompt_tokens'),('output_tokens','judge_output_tokens')]:
+                            values=[call['usage'].get(source) for call in audit['calls']]
+                            row[field]=sum(values) if values and all(type(value) is int for value in values) else None
                     write_json(directory / 'evaluation.json', evaluation)
                     row['verified_success'] = evaluation['passed']
                     if 'score' in evaluation:

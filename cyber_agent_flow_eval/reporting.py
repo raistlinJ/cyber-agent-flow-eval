@@ -79,6 +79,10 @@ def summarize(rows):
             'facts_revealed': sum(r.get('facts_revealed', 0) for r in rows),
             'success_rate': passed / len(verified) if verified else None,
             'mean_score': mean(completed, 'score'),
+            'judge_reviews': sum(bool(row.get('judge_enabled')) for row in rows),
+            'judge_errors': sum(row.get('status')=='judge_error' for row in rows),
+            'mean_judge_seconds': mean(rows, 'judge_seconds'),
+            'judge_calls': sum(row.get('judge_calls',0) for row in rows),
             'mean_execution_seconds': mean(rows, 'execution_seconds'),
             'mean_progress_score': mean(rows, 'progress_score'),
             'mean_time_to_first_flag_seconds': mean(rows, 'time_to_first_flag_seconds')}
@@ -156,7 +160,7 @@ def write_export(directory, report):
         for row in rows:
             stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + '\n')
     columns = ['experiment_id', 'trial_id', 'condition_id', 'task_id', 'repetition', 'attempt', 'status',
-               'verified_success', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hints_released', 'facts_revealed', 'max_tries_before_solution', 'solutions_released', 'solution_provided', 'retries_requested', 'solution_assisted_success', 'hints_assisted_success', 'assisted_success', 'unassisted_success', 'score', 'execution_seconds', 'elapsed_seconds', 'progress_score',
+               'verified_success', 'judge_enabled', 'judge_passed', 'judge_score', 'judge_seconds', 'judge_calls', 'judge_prompt_tokens', 'judge_output_tokens', 'deterministic_passed', 'judge_error', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hints_released', 'facts_revealed', 'max_tries_before_solution', 'solutions_released', 'solution_provided', 'retries_requested', 'solution_assisted_success', 'hints_assisted_success', 'assisted_success', 'unassisted_success', 'score', 'execution_seconds', 'elapsed_seconds', 'progress_score',
                'time_to_first_flag_seconds', 'artifact_hash', 'spec_hash', 'attempt_path']
     with (directory / 'dataset.csv').open('x', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=columns, extrasaction='ignore')

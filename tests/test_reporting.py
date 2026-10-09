@@ -41,6 +41,21 @@ def test_results_use_latest_attempts_and_authoritative_records(recorded):
     assert all_report['summary'] == report['summary']
 
 
+def test_judge_errors_are_unverified_and_usage_is_reported(recorded):
+    passed=recorded/'trials/a/attempt-0002/attempt.json'
+    row=json.loads(passed.read_text())
+    row.update(judge_enabled=True,judge_passed=True,judge_seconds=2,judge_calls=2)
+    write_json(passed,row)
+    failed=recorded/'trials/b/attempt-0001/attempt.json'
+    row=json.loads(failed.read_text())
+    row.update(status='judge_error',verified_success=None,judge_enabled=True,judge_error='Unavailable',judge_seconds=4,judge_calls=1)
+    write_json(failed,row)
+    summary=reporting.results(recorded)['summary']
+    assert summary['verified_trials']==1 and summary['verified_successes']==1
+    assert summary['judge_reviews']==2 and summary['judge_errors']==1
+    assert summary['mean_judge_seconds']==3 and summary['judge_calls']==3
+
+
 def test_read_only_status_does_not_create_locks_and_checks_active_coordinator(recorded):
     before = sorted(str(p) for p in recorded.rglob('*'))
     assert reporting.status(recorded)['coordinator_active'] is False

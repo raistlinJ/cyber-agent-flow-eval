@@ -301,3 +301,35 @@ def test_invalid_solution_limit_in_spec(specification, limit):
     specification.write_text(yaml.safe_dump(raw))
     with pytest.raises(ValueError,match='max_tries_before_solution'):
         resolve(specification)
+
+
+@pytest.mark.parametrize('answer_good,judge_passes,judge_errors',[(True,True,False),(False,True,False),(True,False,False),(True,False,True)])
+def test_runner_requires_judge_and_deterministic_checks(specification,tmp_path,monkeypatch,answer_good,judge_passes,judge_errors):
+    from cyber_agent_flow_eval import judge
+    raw=yaml.safe_load(specification.read_text())
+    raw['judge']={'enabled':True,'use_participant_model':True}
+    specification.write_text(yaml.safe_dump(raw))
+    calls=[]
+    def completion(config,messages,timeout):
+        calls.append(config)
+        if judge_errors:raise judge.JudgeError('Judge unavailable')
+        if len(messages)==2:
+            return json.dumps({'action':'read_evidence','file':'worker-result.json'}),{'prompt_tokens':11,'output_tokens':5}
+        return json.dumps({'action':'verdict','passed':judge_passes,'score':1 if judge_passes else 0,'reason':'Checked saved evidence.','evidence':['worker-result.json']}),{'prompt_tokens':17,'output_tokens':7}
+    monkeypatch.setattr(judge,'_completion',completion)
+    def worker(directory,seconds):
+        inputs=read_json(directory/'input.json')
+        assert 'judge' not in inputs
+        return {'status':'completed','final_answer':'answer' if answer_good else 'wrong'}
+    # Use a known deterministic contract for both scheduled conditions.
+    raw['tasks'][0]['verifier']={'type':'contains_all','expected':['answer']}
+    specification.write_text(yaml.safe_dump(raw))
+    rows=run(specification,tmp_path/'judge-run',launcher=worker)
+    assert calls
+    for row in rows:
+        assert row['verified_success'] == (None if judge_errors else answer_good and judge_passes)
+        assert row['status']==('judge_error' if judge_errors else 'completed')
+        assert row['judge_enabled'] and row['deterministic_passed']==answer_good
+        assert row['judge_calls']==(1 if judge_errors else 2)
+        assert (tmp_path/'judge-run'/row['attempt_path']/'judge.json').is_file()
+        if not judge_errors:assert row['judge_prompt_tokens']==28 and row['judge_output_tokens']==12
