@@ -401,24 +401,6 @@ initial recovery journal remains mandatory before any guest mutation.
 
 Optional `execution.provide_progressive_hints: true` enables host-controlled assistance for ScenarioForge suites. The default is false. Task metadata supplies private `progressive_hints` (ordered strings, e.g. reviewed facilitator excerpts) and/or `discoverable_facts`. No complete guide or unreleased plan is uploaded to the participant. After two turns without new observed fact evidence (or new successful output for tasks without declared facts), or an incorrect final answer, up to three ordinary hints are released within existing budgets. `execution.max_tries_before_solution` (default 6, range 1–1,000) controls how many agent turns without new progress precede the **current challenge's facilitator walkthrough and exact answer/flag**. New progress resets this count; hint releases do not. Full solutions are kept separately in private `challenge_solutions` metadata and released at most once per challenge. Observed flags advance to the next unsolved challenge and reset its try count. Older packages with authored hints fall back to the reviewed task procedure/hints and verifier answer. Incorrect final answers before the limit can receive neutral retry feedback, audited as `retry_feedback` / `retries_requested`. Ordinary hints still exclude literal verifier answers; the gated solution deliberately includes them. Results separate `unassisted_success`, `hints_assisted_success` and `solution_assisted_success`, and record `solution_provided` / `solutions_released`. A success following answer disclosure is never classified as unassisted or hints-only success. Updated CAF `chat(progress_callback=...)` support is required when assistance is enabled and usable guidance is available. Results/CSV distinguish `hints_released`, `facts_revealed`, `assisted_success`, and `unassisted_success`; `assistance.json` preserves the policy and timestamped release audit. Releases are counted conservatively even if transport fails before delivery. If a task has no usable hint source, it runs unassisted and explicitly records `progressive_hints_available: false` with a reason; this does not fail the trial. Authored ordinary hints containing verifier answers still fail validation.
 
-### Live transcript mirror
-
-Proxmox and Fusion trials copy bounded `events.jsonl` chunks through the existing
-guest status RPC; no separate guest polling loop is introduced. The host appends
-complete UTF-8 JSON events with trial identity to `live-transcript.jsonl` in the
-evaluation output. Final collection fills in remaining events without duplicating
-the acknowledged prefix. Incomplete lines are buffered; oversized live previews
-are bounded while original event files remain in the collected outputs. A live
-preview failure cannot bypass cleanup or change trial scoring.
-
-Events include CAF prompts, tool calls/results, assistant replies and system
-prompts. The recording client also emits `reasoning` only when the model's
-returned response contains it; it neither infers nor requests hidden reasoning.
-These events arrive when model calls return, rather than token by token.
-`transport.json` records acknowledged transcript bytes and preview errors.
-The orchestrator serves this owner-scoped host journal through SSE, independently
-of dashboard refresh or whether its transcript window is open.
-
 ### Judge agent
 
 An optional host-side `judge` configuration enables an LLM agent that reviews

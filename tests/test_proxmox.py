@@ -132,28 +132,6 @@ def test_remote_run_stages_public_data_collects_scores_and_resumes(remote_spec, 
     assert len([1 for _, op, _ in agent.calls if op == 'start']) == count
 
 
-def test_transcript_is_mirrored_before_collection_using_existing_status_calls(remote_spec,tmp_path,monkeypatch):
-    path,backend,agent=remote_spec
-    original_call,original_collect=agent.call,backend.collect
-    def call(vmid,op,**data):
-        result=original_call(vmid,op,**data)
-        if op=='status':
-            result=dict(result,_transcript=guest_agent.transcript_chunk(data['transcript_path'],data['transcript_offset']))
-        return result
-    def collect(directory,record):
-        journal=directory.parents[2]/'live-transcript.jsonl'
-        assert journal.is_file() and 'FLAG{observed}' in journal.read_text()
-        return original_collect(directory,record)
-    monkeypatch.setattr(agent,'call',call)
-    monkeypatch.setattr(backend,'collect',collect)
-    output=tmp_path/'streamed-run'
-    rows=run(path,output)
-    events=[json.loads(line) for line in (output/'live-transcript.jsonl').read_text().splitlines()]
-    assert len([event for event in events if event['event']['type']=='tool_result'])==len(rows)
-    assert all(event['trial_id'] for event in events)
-    assert len([op for _,op,_ in agent.calls if op=='status'])==len(rows)
-
-
 def test_guest_timeout_retains_progress_without_final_answer(remote_spec, tmp_path):
     path, backend, agent = remote_spec
     agent.timeout = True

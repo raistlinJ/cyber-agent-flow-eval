@@ -233,8 +233,6 @@ class ProxmoxBackend:
             self.agent.call(vmid, 'unlink', path=result['path'])
 
     def launch(self, directory, seconds, hint_controller=None):
-        from .live_transcript import LiveTranscript
-        transcript = LiveTranscript(directory)
         token = uuid.uuid4().hex
         record = {'vmid': self.vmid, 'unit': 'caf-eval-' + token,
                   'path': self.config['workspace'].rstrip('/') + '/' + token, 'stopped': False,
@@ -274,18 +272,7 @@ class ProxmoxBackend:
             checkpoint('executing')
             deadline = started + seconds + 15
             while True:
-                status = self.agent.call(self.vmid, 'status', unit=record['unit'],
-                                         transcript_path=record['path'] + '/attempt', transcript_offset=transcript.offset)
-                chunk = status.pop('_transcript', None)
-                try:
-                    transcript.accept(chunk)
-                    if chunk and chunk.get('error'):
-                        record['live_transcript_error'] = chunk['error']
-                    elif chunk is not None:
-                        record.pop('live_transcript_error', None)
-                except (OSError, ValueError, KeyError):
-                    record['live_transcript_error'] = 'Live transcript preview unavailable; final logs will still be collected'
-                record['live_transcript_bytes'] = transcript.offset
+                status = self.agent.call(self.vmid, 'status', unit=record['unit'])
                 checkpoint('executing', service_status=status)
                 if status.get('SubState') in {'exited', 'failed', 'dead'} or status.get('LoadState') == 'not-found':
                     break
@@ -304,11 +291,6 @@ class ProxmoxBackend:
             record.update(stopped=True, service_status=status, execution_seconds=time.monotonic() - started)
             checkpoint('collecting')
             self.collect(directory, record)
-            try:
-                transcript.finish(directory / 'guest-output/events.jsonl')
-                record['live_transcript_bytes'] = transcript.offset
-            except (OSError, ValueError):
-                record['live_transcript_error'] = 'Live preview incomplete; inspect the full collected events in the run bundle'
             checkpoint('collected', collected=True)
         result_path = directory / 'guest-output/result.json'
         if status.get('Result') == 'timeout':
