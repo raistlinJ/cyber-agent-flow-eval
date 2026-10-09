@@ -57,6 +57,20 @@ def service_status(unit):
     return result
 
 
+def transcript_chunk(path, offset):
+    if type(offset) is not int or offset < 0:
+        raise ValueError('Invalid transcript offset')
+    try:
+        fd = os.open(Path(path) / 'events.jsonl', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return {'offset':offset, 'content':''}
+    with os.fdopen(fd, 'rb') as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise ValueError('Transcript must be a regular file')
+        stream.seek(offset)
+        return {'offset':offset, 'content':base64.b64encode(stream.read(16 * 1024)).decode()}
+
+
 @contextmanager
 def service_control(data):
     # QGA operations can outlive a disconnected host command. Serialize start
@@ -222,7 +236,13 @@ print(json.dumps({'python': sys.version, 'executable': sys.executable, 'dependen
             raise ValueError('VM has active CAF services not confirmed stopped: ' + json.dumps(remaining))
         return {'ready':True, 'stopped':stopped}
     if op == 'status':
-        return service_status(data['unit'])
+        result = service_status(data['unit'])
+        if data.get('transcript_path'):
+            try:
+                result['_transcript'] = transcript_chunk(data['transcript_path'], data.get('transcript_offset', 0))
+            except (OSError, ValueError):
+                result['_transcript'] = {'error':'Live transcript read unavailable; final logs will still be collected'}
+        return result
     if op == 'stop':
         with service_control(data) as control:
             control.write('cancelled\n')

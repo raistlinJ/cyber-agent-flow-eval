@@ -21,9 +21,35 @@ def plain(value):
     return json.loads(json.dumps(value, default=str))
 
 
+def returned_reasoning(response):
+    """Only reasoning actually supplied by the provider, never inferred text."""
+    if not isinstance(response, dict):
+        return ''
+    messages = [response.get('message', response)]
+    raw = response.get('raw') or {}
+    if isinstance(raw, dict):
+        choices = raw.get('choices')
+        if isinstance(choices, list):
+            messages += [choice.get('message', {}) for choice in choices if isinstance(choice, dict)]
+        messages.append(raw)
+    pieces = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        for key in ('thinking', 'reasoning_content', 'reasoning'):
+            value = message.get(key)
+            if isinstance(value, str) and value.strip() and value not in pieces:
+                pieces.append(value)
+        for block in message.get('content', []) if isinstance(message.get('content'), list) else []:
+            if isinstance(block, dict) and block.get('type') == 'thinking' and isinstance(block.get('thinking'), str):
+                if block['thinking'] not in pieces:
+                    pieces.append(block['thinking'])
+    return '\n\n'.join(pieces)
+
+
 class RecordingClient:
     """Capture every engine model call, including summarization and retries."""
-    def __init__(self, client, directory, origin=None):
+    def __init__(self, client, directory, origin=None, emit=None):
         self.client = client
         self.directory = Path(directory)
         self.count = 0
@@ -31,6 +57,7 @@ class RecordingClient:
         self.records = []
         self.storage_errors = []
         self.origin = time.monotonic() if origin is None else origin
+        self.emit = emit
 
     def __getattr__(self, name):
         return getattr(self.client, name)
@@ -53,6 +80,9 @@ class RecordingClient:
         try:
             result = self.client.chat(*args, **kwargs)
             record['response'] = plain(result)
+            reasoning = returned_reasoning(record['response'])
+            if reasoning and self.emit:
+                self.emit({'type':'reasoning', 'text':reasoning, 'model_call':number})
             return result
         except Exception as exc:
             record['error'] = str(exc)
@@ -144,7 +174,10 @@ async def execute(config, directory):
             raise ValueError('Progressive hints require an updated cyber-agent-flow checkout on the participant VM')
         await session.start()
         write_json(directory / 'checkpoint.json', plain(session.messages))
-        recorder = RecordingClient(session._client, directory / 'model_calls', origin=started)
+        for message in plain(session.messages):
+            if message.get('role') == 'system':
+                on_event({'type':'system_prompt', 'text':message.get('content', '')})
+        recorder = RecordingClient(session._client, directory / 'model_calls', origin=started, emit=on_event)
         session._client = recorder
         await session.chat(config['prompt'], cancel_event=cancel, **({'progress_callback': progressive_hint} if hints_enabled else {}))
         if interaction:
