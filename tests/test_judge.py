@@ -34,6 +34,8 @@ def endpoint():
                 if len(messages)==2:action={'action':'read_evidence','file':'worker-result.json'}
                 else:action['evidence']=['worker-result.json']
             content=json.dumps(action)
+            if state['bad']=='prefixed':content='{"'+content
+            if state['bad']=='ambiguous':content=content+'\n'+content
             result={'message':{'content':content},'prompt_eval_count':20,'eval_count':10} if self.path.endswith('/api/chat') else {
                 'choices':[{'message':{'content':content}}],'usage':{'prompt_tokens':20,'completion_tokens':10}}
             self.send_response(200);self.send_header('Content-Type','application/json');self.end_headers();self.wfile.write(json.dumps(result).encode())
@@ -60,7 +62,15 @@ def test_judge_agent_reads_evidence_and_records_model_usage(tmp_path,endpoint,mo
     assert endpoint['requests'][0][0]==('/api/chat' if provider=='ollama_direct' else '/v1/chat/completions')
 
 
-@pytest.mark.parametrize('failure',['http','json','path','verdict','loop'])
+def test_judge_accepts_one_embedded_json_action(tmp_path,endpoint):
+    endpoint['bad']='prefixed'
+    config=resolve_judge({'enabled':True,'model':{'provider':'openai','url':endpoint['url'],'name':'judge'}})
+    write_json(tmp_path/'worker-result.json',{'final_answer':'observed-token'})
+    task={'prompt':'Recover the token.','verifier':{'type':'contains_all','expected':['observed-token']}}
+    assert judge_trial(config,tmp_path,task,'observed-token',{'passed':True})['passed']
+
+
+@pytest.mark.parametrize('failure',['http','json','path','verdict','loop','ambiguous'])
 def test_judge_errors_are_saved_without_success_fallback(tmp_path,endpoint,failure):
     endpoint['bad']=failure
     config=resolve_judge({'enabled':True,'model':{'provider':'openai','url':endpoint['url'],'name':'judge'},'max_turns':2})

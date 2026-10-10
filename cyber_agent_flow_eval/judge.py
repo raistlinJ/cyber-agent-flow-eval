@@ -3,6 +3,7 @@ from copy import deepcopy
 from pathlib import Path
 import json
 import os
+import re
 import ssl
 import time
 import urllib.error
@@ -208,6 +209,30 @@ def _completion(config, messages, timeout):
         raise JudgeError('Judge endpoint returned an invalid model response') from None
 
 
+def _json_action(text):
+    """Decode one judge action, tolerating a non-JSON wrapper from compatible servers."""
+    try:
+        action = json.loads(text)
+    except (ValueError, TypeError):
+        if not isinstance(text, str):
+            raise JudgeError('Judge must return a JSON action or verdict') from None
+        decoder = json.JSONDecoder()
+        candidates = []
+        for match in re.finditer(r'\{\s*"action"\s*:', text):
+            try:
+                value, _ = decoder.raw_decode(text, match.start())
+            except ValueError:
+                continue
+            if isinstance(value, dict) and value.get('action') in {'read_evidence', 'verdict'}:
+                candidates.append(value)
+        if len(candidates) != 1:
+            raise JudgeError('Judge must return exactly one JSON action or verdict') from None
+        action = candidates[0]
+    if not isinstance(action, dict):
+        raise JudgeError('Judge returned an invalid action')
+    return action
+
+
 def judge_trial(config, directory, task, answer, deterministic, progress=None, purpose='final'):
     started = time.monotonic()
     evidence = Evidence(directory)
@@ -258,12 +283,7 @@ Do not penalize or reward the experimental condition. Judge completion independe
             text, usage = _completion(config,messages,remaining)
             call.update(usage=usage,status='completed')
             messages.append(dict(role='assistant',content=text))
-            try:
-                action = json.loads(text)
-            except (ValueError,TypeError):
-                raise JudgeError('Judge must return a JSON action or verdict') from None
-            if not isinstance(action,dict):
-                raise JudgeError('Judge returned an invalid action')
+            action = _json_action(text)
             if action.get('action')=='read_evidence':
                 result = evidence.call(action)
                 if progress is not None:
