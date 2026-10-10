@@ -435,10 +435,15 @@ records, assistance audits and CAF's native `runs/<run_id>/transcript.md`,
 available, every verdict must cite a log it actually read: native tool records
 take priority, followed by events, conversations, model calls and worker logs.
 The judge checks tool arguments, outputs, exit codes and errors; invoking a tool
-alone does not prove success. Bounded paged reads let it inspect full artifacts
-when tool records contain truncated output. Empty reads cannot satisfy the
-evidence requirement. Missing execution logs produce an explicit evidence
-warning in Results; a final-answer review is not live-state verification.
+alone does not prove success. Bounded paged reads and literal search let it
+inspect full artifacts or locate an exact flag, path or command without loading
+every file. Search results expose the original filename and byte range, and
+verdict citations are accepted only for ranges the judge actually received.
+Empty reads and searches cannot satisfy the evidence requirement. Missing
+execution logs produce an explicit evidence warning in Results; a final-answer
+review is not live-state verification. Long generated scenarios can require a
+larger judge budget than the six-turn default; 24 turns is a practical starting
+point when the execution transcript spans several files.
 `judge.json` records its messages, evidence reads, model requests, token usage,
 reason and final verdict/error. Results and CSV expose `judge_passed`,
 `deterministic_passed`, `judge_score`, `judge_seconds`, `judge_calls`,

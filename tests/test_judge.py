@@ -107,6 +107,23 @@ def test_judge_retries_one_unsupported_action(tmp_path, monkeypatch):
     assert audit['calls'][1]['error'] == 'Judge requested an unsupported action'
 
 
+def test_judge_can_search_evidence_before_verdict(tmp_path, monkeypatch):
+    write_json(tmp_path/'worker-result.json', {'final_answer':'observed-token'})
+    replies = iter([
+        json.dumps({'action':'search_evidence','query':'observed-token','max_results':10}),
+        json.dumps({'action':'verdict','passed':True,'score':1,'reason':'Observed the token.',
+                    'evidence':['worker-result.json']}),
+    ])
+    monkeypatch.setattr('cyber_agent_flow_eval.judge._completion',
+                        lambda config, messages, timeout: (next(replies), {'prompt_tokens':1,'output_tokens':1}))
+    config=resolve_judge({'enabled':True,'model':{'provider':'openai','url':'http://judge.invalid/v1','name':'judge'}})
+    task={'prompt':'Recover the token.','verifier':{'type':'contains_all','expected':['observed-token']}}
+    assert judge_trial(config,tmp_path,task,'observed-token',{'passed':True})['passed']
+    tool_result=json.loads(read_json(tmp_path/'judge.json')['messages'][3]['content'])['tool_result']
+    assert tool_result['results'][0]['file'] == 'worker-result.json'
+    assert 'observed-token' in tool_result['results'][0]['content']
+
+
 @pytest.mark.parametrize('failure',['http','json','path','verdict','loop','ambiguous'])
 def test_judge_errors_are_saved_without_success_fallback(tmp_path,endpoint,failure):
     endpoint['bad']=failure
@@ -124,6 +141,18 @@ def test_evidence_tool_rejects_arbitrary_paths_and_symlinks(tmp_path):
     assert 'messages.json' not in evidence.files
     with pytest.raises(JudgeError):evidence.call({'action':'read_evidence','file':'/etc/passwd'})
     with pytest.raises(JudgeError):evidence.call({'action':'read_evidence','file':'worker-result.json','limit':100000})
+
+
+def test_evidence_search_is_bounded_and_records_citable_ranges(tmp_path):
+    write_json(tmp_path/'worker-result.json', {'final_answer':'prefix observed-token suffix'})
+    evidence=Evidence(tmp_path)
+    result=evidence.search({'action':'search_evidence','query':'observed-token','max_results':2})
+    match=result['results'][0]
+    assert match['file']=='worker-result.json' and 'observed-token' in match['content']
+    assert evidence.read=={'worker-result.json'}
+    assert evidence.ranges['worker-result.json']==[(match['offset'],match['offset']+match['limit'])]
+    with pytest.raises(JudgeError):evidence.search({'action':'search_evidence','query':'x','file':'../../secret'})
+    with pytest.raises(JudgeError):evidence.search({'action':'search_evidence','query':'x'*257})
 
 
 @pytest.mark.parametrize('trace',['events.jsonl','messages.json','runs/trial-1/transcript.md','runs/trial-1/tool_calls/001_curl.json','model_calls/call-000001.json','worker.log'])
