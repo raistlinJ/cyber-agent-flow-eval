@@ -241,6 +241,8 @@ print(json.dumps({'python': sys.version, 'executable': sys.executable, 'dependen
         for path in root.rglob('*'):
             relative = path.relative_to(root).as_posix()
             selected = relative in OUTPUT_FILES or (path.parts[len(root.parts)] in {'model_calls', 'runs'})
+            if data.get('live'):
+                selected = relative in {'events.jsonl', 'messages.json'} or (relative.startswith('runs/') and ('/tool_calls/' in relative or '/artifacts/' in relative or relative.endswith(('/messages.json', '/transcript.md'))))
             if not selected or path.is_dir():
                 continue
             if path.is_symlink() or not stat.S_ISREG(path.stat().st_mode) or not path.resolve().is_relative_to(root.resolve()):

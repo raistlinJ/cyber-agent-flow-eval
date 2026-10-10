@@ -498,3 +498,7 @@ human calibrated; these reports support reproducible experiments, not a claim of
 validated judge correctness.
 
 For Both verification with a rubric, the score records weighted criterion completion; the exact check remains a separate gate on verified success. Incorrect final JSON can receive completion credit without passing. JSON-only prompts keep their required response shape; evidence is available to the judge in execution logs.
+
+Judge configuration also supports `monitor_progress` (default true), `progress_timeout_seconds` (default 20), and `progress_max_checks` (default 32). Intermediate reviews run only for rubric tasks with progressive hints enabled and usable assistance. A private `challenge_plan` maps rubric criteria to challenge steps, prerequisites and guide hints/solutions. It is never placed in worker input. Checkpoint judgments direct assistance; a separate final review scores the trial.
+
+Checkpoint evidence is frozen under `progress-checks/turn-XXXX/`, with hashes and a saved judge conversation; `progress-monitor.json` tracks cumulative milestones. Failed/unavailable checkpoint reviews stay unverified and release no assistance. Transfers and inference consume the worker wall-clock budget; time, usage and optionally priced cost are reported separately. See the [challenge plan schema](schemas/challenge-plan-v1.schema.json) and [workflow guide](../cyber-agent-flow-orchestrator/docs/rubric-experiments.md#scenario-derived-scaffold-and-intermediate-progress).

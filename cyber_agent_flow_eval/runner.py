@@ -187,7 +187,7 @@ def launch(directory, seconds, hint_controller=None):
             deadline = time.monotonic() + seconds
             while process.poll() is None:
                 if hint_controller:
-                    hint_controller.poll()
+                    hint_controller.poll(timeout_seconds=max(0, deadline - time.monotonic() - 1))
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise subprocess.TimeoutExpired(process.args, seconds)
@@ -231,7 +231,7 @@ def export(output):
                'task_outcome', 'execution_status', 'worker_status', 'judge_status', 'assistance_level',
                'criterion_results', 'rubric_hash', 'rubric_version', 'verification_mode', 'reset_seconds',
                'participant_prompt_tokens', 'participant_output_tokens', 'participant_cost_usd',
-               'judge_cost_usd', 'participant_usage_complete',
+               'judge_cost_usd', 'progress_monitor_enabled', 'progress_monitor_checks', 'progress_monitor_errors', 'progress_monitor_seconds', 'progress_monitor_calls', 'progress_monitor_prompt_tokens', 'progress_monitor_output_tokens', 'progress_monitor_cost_usd', 'participant_usage_complete',
                'verified_success', 'judge_enabled', 'judge_passed', 'judge_score', 'judge_seconds', 'judge_calls', 'judge_prompt_tokens', 'judge_output_tokens', 'judge_execution_trace_reviewed', 'judge_evidence_warning', 'judge_evidence_files', 'deterministic_passed', 'judge_error', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hints_released', 'facts_revealed', 'max_tries_before_solution', 'solutions_released', 'solution_provided', 'retries_requested', 'solution_assisted_success', 'hints_assisted_success', 'assisted_success', 'unassisted_success', 'score', 'suite_id', 'package_hash', 'core_session_id', 'readiness_checked_at',
                'elapsed_seconds', 'execution_seconds', 'flags_observed', 'progress_score', 'time_to_first_flag_seconds', 'attempt_path']
     temporary = output / 'dataset.csv.tmp'
@@ -342,6 +342,13 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
                 from .rubric import participant_scaffold
                 participant['prompt'] += '\n\n' + participant_scaffold(task['rubric'])
             write_json(directory / 'input.json', participant)
+            if task.get('rubric'):
+                source = spec.get('suite_snapshot', {})
+                metadata = source.get('task_metadata', {}).get(task['id'], {})
+                references = dict(task_id=task['id'], package_hash=source.get('package_hash'),
+                    challenge_solutions=metadata.get('challenge_solutions', []),
+                    attack_graph=source.get('graph'), challenge_plan=task.get('challenge_plan'))
+                write_json(directory / 'reference-material.json', references)
             started = time.monotonic()
             try:
                 current_identity = backend.identities() if backend else dict(engine=source_identity(spec['engine']['path'])['engine'], runtime=runtime_identity(spec['engine']))
@@ -367,7 +374,9 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
                 hints = None
                 if hints_enabled:
                     metadata = dict(spec.get('suite_snapshot', {}).get('task_metadata', {}).get(task['id'], {}), task_prompt=task['prompt'])
-                    hints = HintController(directory, metadata, task['verifier'], spec['execution'])
+                    hints = HintController(directory, metadata, task['verifier'], spec['execution'],
+                                           task=task, judge=spec.get('judge'),
+                                           progress=(lambda message: progress(f'{trial["trial_id"]}: {message}')) if progress is not None else None)
                     if not hints.available:
                         if progress is not None:
                             progress(f'{trial["trial_id"]}: progressive hints unavailable — {hints.unavailable_reason}')

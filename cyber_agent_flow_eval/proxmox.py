@@ -232,6 +232,19 @@ class ProxmoxBackend:
         finally:
             self.agent.call(vmid, 'unlink', path=result['path'])
 
+    def progress_snapshot(self, record, destination):
+        from .progress_monitor import MAX_SNAPSHOT_BYTES
+        result = self.agent.call(self.vmid, 'pack', path=record['path'] + '/attempt',
+                                 live=True, limit=MAX_SNAPSHOT_BYTES)
+        try:
+            content = self.agent.get(self.vmid, result['path'])
+            destination.mkdir(parents=True, exist_ok=False)
+            unpack(content, destination, MAX_SNAPSHOT_BYTES,
+                   lambda n: n in {'events.jsonl', 'messages.json'} or n.startswith('runs/'))
+            return destination
+        finally:
+            self.agent.call(self.vmid, 'unlink', path=result['path'])
+
     def launch(self, directory, seconds, hint_controller=None):
         token = uuid.uuid4().hex
         record = {'vmid': self.vmid, 'unit': 'caf-eval-' + token,
@@ -262,6 +275,8 @@ class ProxmoxBackend:
             self.agent.put(self.vmid, path, content)
             checkpoint('uploading', files_uploaded=record['files_uploaded'] + 1,
                        bytes_uploaded=record['bytes_uploaded'] + len(content))
+        if hint_controller and hint_controller.monitor:
+            hint_controller.monitor.snapshot = lambda destination: self.progress_snapshot(record, destination)
         started = time.monotonic()
         status = {}
         try:
@@ -282,7 +297,7 @@ class ProxmoxBackend:
                 if hint_controller:
                     request = self.agent.call(self.vmid, 'hint_request', path=record['path'] + '/attempt')
                     if request and request.get('sequence') != (hint_controller.response or {}).get('sequence'):
-                        response = hint_controller.respond(request)
+                        response = hint_controller.respond(request, timeout_seconds=max(0, deadline - time.monotonic() - 16))
                         self.agent.call(self.vmid, 'hint_reply', path=record['path'] + '/attempt', response=response)
                 time.sleep(self.config['poll_seconds'])
         finally:

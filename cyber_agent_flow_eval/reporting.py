@@ -89,6 +89,10 @@ def summarize(rows):
             'mean_reset_seconds': mean(rows,'reset_seconds'),
             'mean_participant_cost_usd': mean(rows,'participant_cost_usd'),
             'mean_judge_cost_usd': mean(rows,'judge_cost_usd'),
+            'mean_progress_monitor_cost_usd': mean(rows,'progress_monitor_cost_usd'),
+            'progress_monitor_checks': sum(r.get('progress_monitor_checks',0) for r in rows),
+            'progress_monitor_errors': sum(r.get('progress_monitor_errors',0) for r in rows),
+            'mean_progress_monitor_seconds': mean(rows,'progress_monitor_seconds'),
             'participant_usage_complete_trials': sum(bool(r.get('participant_usage_complete')) for r in rows),
             'judge_prompt_tokens': sum(r['judge_prompt_tokens'] for r in rows if r.get('judge_enabled')) if any(r.get('judge_enabled') for r in rows) and all(type(r.get('judge_prompt_tokens')) is int for r in rows if r.get('judge_enabled')) else None,
             'judge_output_tokens': sum(r['judge_output_tokens'] for r in rows if r.get('judge_enabled')) if any(r.get('judge_enabled') for r in rows) and all(type(r.get('judge_output_tokens')) is int for r in rows if r.get('judge_enabled')) else None,
@@ -181,7 +185,7 @@ def write_export(directory, report):
         for row in rows:
             stream.write(json.dumps(row, ensure_ascii=False, allow_nan=False) + '\n')
     columns = ['experiment_id', 'trial_id', 'condition_id', 'task_id', 'repetition', 'attempt', 'status',
-               'verified_success', 'judge_enabled', 'judge_passed', 'judge_score', 'judge_seconds', 'judge_calls', 'judge_prompt_tokens', 'judge_output_tokens', 'judge_execution_trace_reviewed', 'judge_evidence_warning', 'judge_evidence_files', 'deterministic_passed', 'judge_error', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hints_released', 'facts_revealed', 'max_tries_before_solution', 'solutions_released', 'solution_provided', 'retries_requested', 'solution_assisted_success', 'hints_assisted_success', 'assisted_success', 'unassisted_success', 'score', 'execution_seconds', 'elapsed_seconds', 'task_outcome', 'execution_status', 'worker_status', 'judge_status', 'assistance_level', 'criterion_results', 'rubric_hash', 'rubric_version', 'scenario_definition_sha256', 'verification_mode', 'reset_seconds', 'participant_prompt_tokens', 'participant_output_tokens', 'participant_cost_usd', 'judge_cost_usd', 'participant_usage_complete', 'progress_score',
+               'verified_success', 'judge_enabled', 'judge_passed', 'judge_score', 'judge_seconds', 'judge_calls', 'judge_prompt_tokens', 'judge_output_tokens', 'judge_execution_trace_reviewed', 'judge_evidence_warning', 'judge_evidence_files', 'deterministic_passed', 'judge_error', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hints_released', 'facts_revealed', 'max_tries_before_solution', 'solutions_released', 'solution_provided', 'retries_requested', 'solution_assisted_success', 'hints_assisted_success', 'assisted_success', 'unassisted_success', 'score', 'execution_seconds', 'elapsed_seconds', 'task_outcome', 'execution_status', 'worker_status', 'judge_status', 'assistance_level', 'criterion_results', 'rubric_hash', 'rubric_version', 'scenario_definition_sha256', 'verification_mode', 'reset_seconds', 'participant_prompt_tokens', 'participant_output_tokens', 'participant_cost_usd', 'judge_cost_usd', 'progress_monitor_enabled', 'progress_monitor_checks', 'progress_monitor_errors', 'progress_monitor_seconds', 'progress_monitor_calls', 'progress_monitor_prompt_tokens', 'progress_monitor_output_tokens', 'progress_monitor_cost_usd', 'participant_usage_complete', 'progress_score',
                'time_to_first_flag_seconds', 'artifact_hash', 'spec_hash', 'attempt_path']
     with (directory / 'dataset.csv').open('x', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=columns, extrasaction='ignore')

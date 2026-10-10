@@ -78,7 +78,7 @@ def load_suite(path):
         requirements = metadata[task['id']].get('required_checks')
         if not isinstance(requirements, list) or not requirements or any(not isinstance(v, str) or not v for v in requirements):
             raise ValueError('Task lacks required readiness checks')
-        extra = {key: metadata[task['id']][key] for key in ('rubric', 'verification_mode') if key in metadata[task['id']]}
+        extra = {key: metadata[task['id']][key] for key in ('rubric', 'verification_mode', 'challenge_plan') if key in metadata[task['id']]}
         tasks.append(dict(task, verifier=verifiers[task['id']], **extra))
     ids = [t['id'] for t in tasks]
     if len(set(ids)) != len(ids) or set(ids) != set(verifiers) or set(ids) != set(metadata):

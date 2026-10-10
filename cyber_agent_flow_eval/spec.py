@@ -145,7 +145,7 @@ def resolve(path):
         seen = set()
         for item in spec[kind]:
             if kind == 'tasks':
-                fields(item, ['id', 'prompt', 'family', 'split', 'scenario_id', 'verifier', 'rubric', 'verification_mode'],
+                fields(item, ['id', 'prompt', 'family', 'split', 'scenario_id', 'verifier', 'rubric', 'verification_mode', 'challenge_plan'],
                        ['id', 'prompt', 'family', 'split', 'scenario_id', 'verifier'], 'task')
                 for key in ['prompt', 'family', 'scenario_id']:
                     if not isinstance(item[key], str) or not item[key]:
@@ -166,6 +166,9 @@ def resolve(path):
                         raise ValueError('A rubric-only verifier requires judge mode')
                 if 'rubric' in item:
                     item['rubric'] = validate_rubric(item['rubric'])
+                if 'challenge_plan' in item:
+                    from .challenge_plan import validate_plan
+                    item['challenge_plan'] = validate_plan(item['challenge_plan'], item.get('rubric', {}))
                 if mode in {'judge', 'both'}:
                     if not item.get('rubric') or not spec.get('judge', {}).get('enabled'):
                         raise ValueError('Judge/both mode requires a rubric and an enabled judge')

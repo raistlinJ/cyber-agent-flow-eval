@@ -117,6 +117,7 @@ async def execute(config, directory):
     try:
         async def progressive_hint(observation):
             # Only observations leave the worker; unreleased hints remain on the host.
+            write_json(directory / 'messages.json', plain(session.messages))
             sequence = observation['turn']
             request = dict(observation, sequence=sequence,
                            final_truncated=len(observation.get('final_answer') or '') > 1200,

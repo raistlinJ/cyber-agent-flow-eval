@@ -83,5 +83,10 @@ def collect(directory, row, pricing):
             row.get("judge_output_tokens"),
             pricing.get("judge"),
         ),
+        progress_monitor_cost_usd=cost(
+            row.get("progress_monitor_prompt_tokens"),
+            row.get("progress_monitor_output_tokens"),
+            pricing.get("judge"),
+        ),
         usage_scope="recorded CAF model calls; nested tool/provider calls may be unavailable",
     )
