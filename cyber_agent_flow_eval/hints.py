@@ -30,6 +30,14 @@ def strings(value):
 
 def resolve_policy(execution=None):
     policy = dict(POLICY)
+    execution = execution or {}
+    stalled = execution.get("hint_stalled_turns", policy["stalled_turns"])
+    if type(stalled) is not int or not 1 <= stalled <= 1000:
+        raise ValueError("hint_stalled_turns must be an integer from 1 to 1000")
+    max_turns = execution.get("max_turns")
+    if execution.get("provide_progressive_hints") and type(max_turns) is int and stalled >= max_turns:
+        raise ValueError("hint_stalled_turns must be less than max_turns when progressive hints are enabled")
+    policy["stalled_turns"] = stalled
     tries = (execution or {}).get(
         "max_tries_before_solution", policy["max_tries_before_solution"]
     )
@@ -526,6 +534,9 @@ def metrics(directory, enabled, success):
             audit.get("policy", {}).get("max_tries_before_solution")
             if enabled
             else None
+        ),
+        hint_stalled_turns=(
+            audit.get("policy", {}).get("stalled_turns") if enabled else None
         ),
         solutions_released=sum(bool(event.get("solution")) for event in events),
         retries_requested=len(feedback),

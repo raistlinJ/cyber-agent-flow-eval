@@ -110,7 +110,7 @@ def resolve(path):
     if 'judge' in spec:
         spec['judge'] = resolve_judge(spec['judge'], model)
     execution = spec['execution']
-    fields(execution, ['wall_seconds', 'max_turns', 'tool_timeout', 'context_window', 'network_policy', 'target_lock', 'reveal_network_policy', 'progress_seconds', 'provide_progressive_hints', 'auto_approve_dangerous', 'max_tries_before_solution'],
+    fields(execution, ['wall_seconds', 'max_turns', 'tool_timeout', 'context_window', 'network_policy', 'target_lock', 'reveal_network_policy', 'progress_seconds', 'provide_progressive_hints', 'auto_approve_dangerous', 'hint_stalled_turns', 'max_tries_before_solution'],
            ['wall_seconds', 'max_turns', 'network_policy', 'target_lock'], 'execution')
     if type(execution.get('provide_progressive_hints', False)) is not bool:
         raise ValueError('provide_progressive_hints must be a boolean')

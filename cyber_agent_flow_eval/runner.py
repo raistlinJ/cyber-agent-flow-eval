@@ -232,7 +232,7 @@ def export(output):
                'criterion_results', 'rubric_hash', 'rubric_version', 'verification_mode', 'reset_seconds',
                'participant_prompt_tokens', 'participant_output_tokens', 'participant_cost_usd',
                'judge_cost_usd', 'progress_monitor_enabled', 'progress_monitor_checks', 'progress_monitor_errors', 'progress_monitor_seconds', 'progress_monitor_calls', 'progress_monitor_prompt_tokens', 'progress_monitor_output_tokens', 'progress_monitor_cost_usd', 'participant_usage_complete',
-               'verified_success', 'judge_enabled', 'judge_passed', 'judge_score', 'judge_seconds', 'judge_calls', 'judge_prompt_tokens', 'judge_output_tokens', 'judge_execution_trace_reviewed', 'judge_evidence_warning', 'judge_evidence_files', 'deterministic_passed', 'judge_error', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hints_released', 'facts_revealed', 'max_tries_before_solution', 'solutions_released', 'solution_provided', 'retries_requested', 'solution_assisted_success', 'hints_assisted_success', 'assisted_success', 'unassisted_success', 'score', 'suite_id', 'package_hash', 'core_session_id', 'readiness_checked_at',
+               'verified_success', 'judge_enabled', 'judge_passed', 'judge_score', 'judge_seconds', 'judge_calls', 'judge_prompt_tokens', 'judge_output_tokens', 'judge_execution_trace_reviewed', 'judge_evidence_warning', 'judge_evidence_files', 'deterministic_passed', 'judge_error', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hint_stalled_turns', 'hints_released', 'facts_revealed', 'max_tries_before_solution', 'solutions_released', 'solution_provided', 'retries_requested', 'solution_assisted_success', 'hints_assisted_success', 'assisted_success', 'unassisted_success', 'score', 'suite_id', 'package_hash', 'core_session_id', 'readiness_checked_at',
                'elapsed_seconds', 'execution_seconds', 'flags_observed', 'progress_score', 'time_to_first_flag_seconds', 'attempt_path']
     temporary = output / 'dataset.csv.tmp'
     with temporary.open('w', newline='') as stream:
@@ -330,7 +330,7 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
             write_json(directory / 'attempt.json', row)
             write_json(directory / 'catalog.json', condition['catalog_snapshot'])
             # Only participant-facing fields are passed to the engine worker.
-            participant_execution = {key: value for key, value in spec['execution'].items() if key not in {'target_lock', 'progress_seconds', 'max_tries_before_solution'}}
+            participant_execution = {key: value for key, value in spec['execution'].items() if key not in {'target_lock', 'progress_seconds', 'hint_stalled_turns', 'max_tries_before_solution'}}
             hints_enabled = condition.get('provide_progressive_hints', spec['execution'].get('provide_progressive_hints', False))
             participant_execution['provide_progressive_hints'] = hints_enabled
             participant = {'model': spec['model'], 'execution': participant_execution, 'engine': spec['engine'],
@@ -374,7 +374,8 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
                 hints = None
                 if hints_enabled:
                     metadata = dict(spec.get('suite_snapshot', {}).get('task_metadata', {}).get(task['id'], {}), task_prompt=task['prompt'])
-                    hints = HintController(directory, metadata, task['verifier'], spec['execution'],
+                    hints = HintController(directory, metadata, task['verifier'],
+                                           dict(spec['execution'], provide_progressive_hints=True),
                                            task=task, judge=spec.get('judge'),
                                            progress=(lambda message: progress(f'{trial["trial_id"]}: {message}')) if progress is not None else None)
                     if not hints.available:

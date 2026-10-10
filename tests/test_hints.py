@@ -5,7 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from cyber_agent_flow_eval.hints import HintController, metrics
+from cyber_agent_flow_eval.hints import HintController, metrics, resolve_policy
 from cyber_agent_flow_eval.storage import read_json, write_json
 from cyber_agent_flow_eval.runner import launch
 from cyber_agent_flow_eval.proxmox import ProxmoxBackend
@@ -15,6 +15,23 @@ from test_proxmox import GuestSimulator, config, ENGINE_SOURCE
 
 def request(turn, results=None, final=None):
     return dict(sequence=turn, turn=turn, results=results or [], final_answer=final)
+
+
+def test_hint_stalled_turns_is_configurable_and_bounded_by_agent_turns(tmp_path):
+    execution = dict(provide_progressive_hints=True, max_turns=5, hint_stalled_turns=3)
+    assert resolve_policy(execution)['stalled_turns'] == 3
+    controller = HintController(
+        tmp_path,
+        {'progressive_hints': ['Inspect the response headers.']},
+        dict(type='contains_all', expected=['SECRET-FLAG']),
+        execution,
+    )
+    assert controller.respond(request(1))['hint'] is None
+    assert controller.respond(request(2))['hint'] is None
+    assert controller.respond(request(3))['hint'] == 'Inspect the response headers.'
+    assert metrics(tmp_path, True, False)['hint_stalled_turns'] == 3
+    with pytest.raises(ValueError, match='less than max_turns'):
+        resolve_policy(dict(provide_progressive_hints=True, max_turns=3, hint_stalled_turns=3))
 
 
 def test_facts_progress_reveal_and_answer_protection(tmp_path):
