@@ -66,6 +66,9 @@ class GuestSimulator(GuestAgent):
             log = Path(self.config['workspace']).parent / 'hook.log'
             log.write_text('restored known state\n')
             return {'exitcode': 0, 'log_path': str(log)}
+        if op == 'route_targets':
+            return {'changed': data['networks'], 'gateway': '10.254.200.1',
+                    'interface': 'ens18', 'networks': data['networks']}
         return guest_agent.dispatch(dict(data, op=op))
 
 
@@ -318,6 +321,17 @@ def test_hooks_run_before_worker(remote_spec, tmp_path):
     assert (tmp_path / 'results/trials/trial-000001/attempt-0001/hook-000.log').read_text().startswith('restored')
 
 
+def test_route_allowed_targets_runs_before_worker(remote_spec, tmp_path):
+    path, backend, agent = remote_spec
+    backend.config['route_allowed_targets'] = True
+    backend.target_networks = ['172.17.230.0/24']
+    run(path, tmp_path / 'results')
+    ops = [op for _, op, _ in agent.calls]
+    assert ops.index('route_targets') < ops.index('start')
+    audit = read_json(tmp_path / 'results/trials/trial-000001/attempt-0001/target-routes.json')
+    assert audit['changed'] == ['172.17.230.0/24']
+
+
 def test_hook_failure_prevents_all_worker_launches(remote_spec, tmp_path, monkeypatch):
     path, backend, agent = remote_spec
     backend.config['before_trial'] = [{'vmid': 9401, 'argv': ['/opt/lab/reset'], 'timeout_seconds': 60}]
@@ -417,6 +431,28 @@ def test_guest_service_uses_user_and_cgroup_deadline(config, tmp_path, monkeypat
     assert '--property=EnvironmentFile=/etc/caf.env' in argv
     assert '--property=User=' + config['user'] in argv
     assert '--property=WorkingDirectory=/opt/CAF with spaces' in argv
+
+
+def test_guest_target_routes_override_local_docker_network(monkeypatch):
+    calls = []
+    def command(argv, **kwargs):
+        calls.append(argv)
+        if argv == ['ip', '-j', '-4', 'route', 'show', 'default']:
+            return json.dumps([
+                {'gateway': '192.168.20.2', 'dev': 'ens20', 'metric': 100},
+                {'gateway': '10.254.200.1', 'dev': 'ens18', 'metric': 2000},
+            ])
+        if argv[:7] == ['ip', '-j', '-4', 'route', 'show', 'exact', '172.17.230.0/24']:
+            return json.dumps([{'dst': '172.17.0.0/16', 'dev': 'docker0'}])
+        if argv[:6] == ['ip', '-j', '-4', 'route', 'get', '172.17.230.1']:
+            return json.dumps([{'dst': '172.17.230.1', 'gateway': '10.254.200.1', 'dev': 'ens18'}])
+        return ''
+    monkeypatch.setattr(guest_agent, 'command', command)
+    result = guest_agent.dispatch({'op': 'route_targets', 'networks': ['172.17.230.0/24']})
+    assert result == {'changed': ['172.17.230.0/24'], 'gateway': '10.254.200.1',
+                      'interface': 'ens18', 'networks': ['172.17.230.0/24']}
+    assert ['ip', '-4', 'route', 'replace', '172.17.230.0/24', 'via', '10.254.200.1',
+            'dev', 'ens18', 'metric', '2000'] in calls
 
 
 def test_delayed_start_cannot_revive_cancelled_service(config, tmp_path, monkeypatch):

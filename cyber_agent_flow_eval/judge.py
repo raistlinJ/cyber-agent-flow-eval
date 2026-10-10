@@ -283,51 +283,61 @@ Do not penalize or reward the experimental condition. Judge completion independe
             text, usage = _completion(config,messages,remaining)
             call.update(usage=usage,status='completed')
             messages.append(dict(role='assistant',content=text))
-            action = _json_action(text)
-            if action.get('action')=='read_evidence':
-                result = evidence.call(action)
-                if progress is not None:
-                    progress('reading evidence: ' + action['file'])
-                messages.append(dict(role='user',content=json.dumps({'tool_result':result},ensure_ascii=False)))
-            elif action.get('action')=='verdict':
-                if rubric:
-                    from .rubric import aggregate
-                    if set(action) != {'action', 'criteria'}:
-                        raise JudgeError('Rubric verdict requires action and criteria only')
-                    try:
-                        verdict = aggregate(rubric, action['criteria'])
-                    except (ValueError, TypeError, KeyError) as exc:
-                        raise JudgeError(str(exc)) from None
-                    for item in action['criteria']:
-                        direct = False
-                        for citation in item['evidence']:
-                            if not isinstance(citation, dict) or set(citation) != {'file', 'offset', 'limit'}:
-                                raise JudgeError('Criterion citations require file, offset and limit')
-                            name, offset, limit = citation['file'], citation['offset'], citation['limit']
-                            if (not isinstance(name,str) or type(offset) is not int or type(limit) is not int or limit <= 0 or
-                                    not any(start <= offset and offset + limit <= end for start, end in evidence.ranges.get(name, []))):
-                                raise JudgeError('Criterion citation must reference a byte range actually read')
-                            direct |= evidence.direct_output(name)
-                        if item['status'] != 'unverified' and not direct:
-                            raise JudgeError('Satisfied/unmet criteria require direct execution evidence')
-                    verdict.update(reason='; '.join(c['id'] + ': ' + c['reason'] for c in action['criteria']),
-                                   evidence=sorted(evidence.read))
-                    audit.update(status='completed', verdict=verdict)
-                    return verdict
-                if (set(action)!={'action','passed','score','reason','evidence'} or type(action['passed']) is not bool
-                        or type(action['score']) not in (float,int) or not 0<=action['score']<=1
-                        or not isinstance(action['reason'],str) or not 1<=len(action['reason'])<=4000
-                        or not isinstance(action['evidence'],list) or not action['evidence']
-                        or any(not isinstance(name,str) or name not in evidence.read for name in action['evidence'])):
-                    raise JudgeError('Judge verdict must cite evidence it read and contain valid passed, score and reason fields')
-                if evidence.required_trace_files and not set(action['evidence']).intersection(evidence.required_trace_files):
-                    raise JudgeError('Judge verdict must cite a cyber-agent-flow execution log it read')
-                audit.update(status='completed',verdict=action)
-                if progress is not None:
-                    progress('verdict: ' + ('pass' if action['passed'] else 'fail'))
-                return action
-            else:
-                raise JudgeError('Judge requested an unsupported action')
+            try:
+                action = _json_action(text)
+                if action.get('action')=='read_evidence':
+                    result = evidence.call(action)
+                    if progress is not None:
+                        progress('reading evidence: ' + action['file'])
+                    messages.append(dict(role='user',content=json.dumps({'tool_result':result},ensure_ascii=False)))
+                elif action.get('action')=='verdict':
+                    if rubric:
+                        from .rubric import aggregate
+                        if set(action) != {'action', 'criteria'}:
+                            raise JudgeError('Rubric verdict requires action and criteria only')
+                        try:
+                            verdict = aggregate(rubric, action['criteria'])
+                        except (ValueError, TypeError, KeyError) as exc:
+                            raise JudgeError(str(exc)) from None
+                        for item in action['criteria']:
+                            direct = False
+                            for citation in item['evidence']:
+                                if not isinstance(citation, dict) or set(citation) != {'file', 'offset', 'limit'}:
+                                    raise JudgeError('Criterion citations require file, offset and limit')
+                                name, offset, limit = citation['file'], citation['offset'], citation['limit']
+                                if (not isinstance(name,str) or type(offset) is not int or type(limit) is not int or limit <= 0 or
+                                        not any(start <= offset and offset + limit <= end for start, end in evidence.ranges.get(name, []))):
+                                    raise JudgeError('Criterion citation must reference a byte range actually read')
+                                direct |= evidence.direct_output(name)
+                            if item['status'] != 'unverified' and not direct:
+                                raise JudgeError('Satisfied/unmet criteria require direct execution evidence')
+                        verdict.update(reason='; '.join(c['id'] + ': ' + c['reason'] for c in action['criteria']),
+                                       evidence=sorted(evidence.read))
+                        audit.update(status='completed', verdict=verdict)
+                        return verdict
+                    if (set(action)!={'action','passed','score','reason','evidence'} or type(action['passed']) is not bool
+                            or type(action['score']) not in (float,int) or not 0<=action['score']<=1
+                            or not isinstance(action['reason'],str) or not 1<=len(action['reason'])<=4000
+                            or not isinstance(action['evidence'],list) or not action['evidence']
+                            or any(not isinstance(name,str) or name not in evidence.read for name in action['evidence'])):
+                        raise JudgeError('Judge verdict must cite evidence it read and contain valid passed, score and reason fields')
+                    if evidence.required_trace_files and not set(action['evidence']).intersection(evidence.required_trace_files):
+                        raise JudgeError('Judge verdict must cite a cyber-agent-flow execution log it read')
+                    audit.update(status='completed',verdict=action)
+                    if progress is not None:
+                        progress('verdict: ' + ('pass' if action['passed'] else 'fail'))
+                    return action
+                else:
+                    raise JudgeError('Judge requested an unsupported action')
+            except JudgeError as exc:
+                call.update(status='invalid', error=str(exc))
+                if turn == config['max_turns']:
+                    raise
+                messages.append(dict(role='user', content=json.dumps({
+                    'error': str(exc),
+                    'instruction': 'Return exactly one valid JSON read_evidence action or verdict now. Do not include prose or Markdown.',
+                })))
+                continue
         raise JudgeError('Judge turn budget exceeded without a verdict')
     except JudgeError as exc:
         audit.update(status='error',error=str(exc))

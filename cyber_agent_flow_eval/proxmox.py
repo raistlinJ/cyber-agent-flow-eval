@@ -154,10 +154,11 @@ def unpack(content, destination, limit, allowed):
 
 
 class ProxmoxBackend:
-    def __init__(self, config, engine, *, agent=None):
+    def __init__(self, config, engine, *, agent=None, target_networks=()):
         self.config, self.engine = config, engine
         self.agent = agent or GuestAgent(config)
         self.vmid = config['participant_vmid']
+        self.target_networks = list(target_networks)
 
     def lock(self):
         from .runner import lease
@@ -195,6 +196,12 @@ class ProxmoxBackend:
 
     def before_trial(self, directory):
         from .runner import PreparationError
+        if self.config.get('route_allowed_targets'):
+            try:
+                routes = self.agent.call(self.vmid, 'route_targets', networks=self.target_networks)
+                write_json(directory / 'target-routes.json', routes)
+            except Exception as exc:
+                raise PreparationError(f'Participant target route preparation failed: {exc}') from exc
         for number, hook in enumerate(self.config['before_trial']):
             record = {'vmid': hook['vmid'], 'unit': 'caf-eval-hook-' + uuid.uuid4().hex, 'stopped': False,
                       'argv': hook['argv'], 'started_at': datetime.now(timezone.utc).isoformat()}

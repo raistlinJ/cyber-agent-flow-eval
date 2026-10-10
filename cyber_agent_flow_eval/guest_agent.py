@@ -8,6 +8,7 @@ import base64
 from contextlib import contextmanager
 import fcntl
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -30,6 +31,7 @@ RPC_INPUT_LIMIT = 1024 * 1024
 SUPPORTED_OPERATIONS = frozenset({
     'hint_request', 'hint_reply', 'probe', 'mkdir', 'write', 'stat', 'read',
     'unlink', 'start', 'preflight', 'status', 'stop', 'pack', 'hook',
+    'route_targets',
 })
 
 
@@ -221,6 +223,52 @@ print(json.dumps({'python': sys.version, 'executable': sys.executable, 'dependen
         if remaining:
             raise ValueError('VM has active CAF services not confirmed stopped: ' + json.dumps(remaining))
         return {'ready':True, 'stopped':stopped}
+    if op == 'route_targets':
+        values = data.get('networks')
+        if not isinstance(values, list) or len(values) > 256:
+            raise ValueError('Target networks must be a bounded list')
+        networks = []
+        for value in values:
+            if value == '*':
+                continue
+            try:
+                network = ipaddress.ip_network(value, strict=False)
+            except (TypeError, ValueError):
+                raise ValueError(f'Invalid target network: {value}') from None
+            if (network.version != 4 or network.prefixlen == 0 or network.is_loopback
+                    or network.is_link_local or network.is_multicast or network.is_unspecified):
+                continue
+            text = str(network)
+            if text not in networks:
+                networks.append(text)
+        if not networks:
+            return {'changed': [], 'gateway': None, 'interface': None}
+        defaults = json.loads(command(['ip', '-j', '-4', 'route', 'show', 'default']))
+        candidates = [route for route in defaults
+                      if isinstance(route, dict) and route.get('gateway') and route.get('dev')]
+        if not candidates:
+            raise ValueError('Participant has no routed IPv4 default for the HITL gateway')
+        # Provisioners deliberately give the isolated HITL default the highest
+        # metric (normally 2000). The ordinary uplink, when retained for
+        # bootstrap or LLM access, has a lower metric and must not carry lab
+        # target traffic.
+        route = max(candidates, key=lambda item: int(item.get('metric', 0)))
+        gateway, interface = route['gateway'], route['dev']
+        ipaddress.IPv4Address(gateway)
+        if not re.fullmatch(r'[A-Za-z0-9_.:-]{1,15}', interface):
+            raise ValueError('Invalid HITL interface name')
+        changed = []
+        for network in networks:
+            current = json.loads(command(['ip', '-j', '-4', 'route', 'show', 'exact', network], allow_failure=True) or '[]')
+            if any(item.get('dev') == interface and item.get('gateway') == gateway for item in current):
+                continue
+            command(['ip', '-4', 'route', 'replace', network, 'via', gateway, 'dev', interface,
+                     'metric', str(int(route.get('metric', 2000)))])
+            resolved = json.loads(command(['ip', '-j', '-4', 'route', 'get', str(ipaddress.ip_network(network).network_address + 1)]))
+            if not resolved or resolved[0].get('dev') != interface or resolved[0].get('gateway') != gateway:
+                raise ValueError(f'Target route did not resolve through HITL: {network}')
+            changed.append(network)
+        return {'changed': changed, 'gateway': gateway, 'interface': interface, 'networks': networks}
     if op == 'status':
         return service_status(data['unit'])
     if op == 'stop':

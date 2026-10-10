@@ -26,7 +26,8 @@ def resolve_backend(value):
     if kind not in ('proxmox', 'fusion'):
         raise ValueError('backend.type must be local, proxmox, fusion, macos, linux, or windows')
     allowed = ['type', 'participant_vmid', 'app_vmid', 'workspace', 'user', 'guest_python',
-               'environment_file', 'command_timeout', 'poll_seconds', 'max_transfer_bytes', 'before_trial']
+               'environment_file', 'command_timeout', 'poll_seconds', 'max_transfer_bytes', 'before_trial',
+               'route_allowed_targets']
     if kind == 'fusion':
         allowed += ['inventory_file', 'vmrun']
     fields(value, allowed, ['type', 'participant_vmid', 'user'], 'backend')
@@ -50,6 +51,9 @@ def resolve_backend(value):
     value.setdefault('command_timeout', 30)
     value.setdefault('poll_seconds', 1)
     value.setdefault('max_transfer_bytes', 256 * 1024 * 1024)
+    value.setdefault('route_allowed_targets', False)
+    if type(value['route_allowed_targets']) is not bool:
+        raise ValueError('backend.route_allowed_targets must be boolean')
     for key in ('workspace', 'guest_python', 'environment_file'):
         if key in value:
             guest_path(value[key], f'backend.{key}')
@@ -78,8 +82,10 @@ def resolve_backend(value):
 def create_backend(spec):
     if spec['backend']['type'] == 'fusion':
         from .fusion import FusionBackend
-        return FusionBackend(spec['backend'], spec['engine'])
+        return FusionBackend(spec['backend'], spec['engine'],
+                             target_networks=spec['execution']['network_policy']['allow'])
     if spec['backend']['type'] == 'proxmox':
         from .proxmox import ProxmoxBackend
-        return ProxmoxBackend(spec['backend'], spec['engine'])
+        return ProxmoxBackend(spec['backend'], spec['engine'],
+                              target_networks=spec['execution']['network_policy']['allow'])
     return None

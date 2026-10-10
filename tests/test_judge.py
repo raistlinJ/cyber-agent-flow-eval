@@ -25,7 +25,8 @@ def endpoint():
                 filename=next(iter(plan['required_trace_files']),'worker-result.json')
                 action={'action':'read_evidence','file':filename,'offset':0,'limit':6000}
             else:
-                filename=json.loads(messages[-1]['content'])['tool_result']['file']
+                latest=json.loads(messages[-1]['content'])
+                filename=latest.get('tool_result',{}).get('file','worker-result.json')
                 action={'action':'verdict','passed':True,'score':1,'reason':'Observed the expected final response.', 'evidence':[filename]}
             if state['bad']=='path':action={'action':'read_evidence','file':'../../secret'}
             if state['bad']=='verdict':action={'action':'verdict','passed':'yes','score':1,'reason':'Done','evidence':[]}
@@ -68,6 +69,42 @@ def test_judge_accepts_one_embedded_json_action(tmp_path,endpoint):
     write_json(tmp_path/'worker-result.json',{'final_answer':'observed-token'})
     task={'prompt':'Recover the token.','verifier':{'type':'contains_all','expected':['observed-token']}}
     assert judge_trial(config,tmp_path,task,'observed-token',{'passed':True})['passed']
+
+
+def test_judge_retries_one_malformed_json_action(tmp_path, monkeypatch):
+    write_json(tmp_path/'worker-result.json', {'final_answer':'observed-token'})
+    replies = iter([
+        json.dumps({'action':'read_evidence','file':'worker-result.json','offset':0,'limit':6000}),
+        '{"{"',
+        json.dumps({'action':'verdict','passed':True,'score':1,'reason':'Observed the token.',
+                    'evidence':['worker-result.json']}),
+    ])
+    monkeypatch.setattr('cyber_agent_flow_eval.judge._completion',
+                        lambda config, messages, timeout: (next(replies), {'prompt_tokens':1,'output_tokens':1}))
+    config=resolve_judge({'enabled':True,'model':{'provider':'openai','url':'http://judge.invalid/v1','name':'judge'},'max_turns':3})
+    task={'prompt':'Recover the token.','verifier':{'type':'contains_all','expected':['observed-token']}}
+    assert judge_trial(config,tmp_path,task,'observed-token',{'passed':True})['passed']
+    audit=read_json(tmp_path/'judge.json')
+    assert [call['status'] for call in audit['calls']] == ['completed','invalid','completed']
+    assert audit['messages'][-2]['role'] == 'user'
+
+
+def test_judge_retries_one_unsupported_action(tmp_path, monkeypatch):
+    write_json(tmp_path/'worker-result.json', {'final_answer':'observed-token'})
+    replies = iter([
+        json.dumps({'action':'read_evidence','file':'worker-result.json','offset':0,'limit':6000}),
+        json.dumps({'unexpected':'object'}),
+        json.dumps({'action':'verdict','passed':True,'score':1,'reason':'Observed the token.',
+                    'evidence':['worker-result.json']}),
+    ])
+    monkeypatch.setattr('cyber_agent_flow_eval.judge._completion',
+                        lambda config, messages, timeout: (next(replies), {'prompt_tokens':1,'output_tokens':1}))
+    config=resolve_judge({'enabled':True,'model':{'provider':'openai','url':'http://judge.invalid/v1','name':'judge'},'max_turns':3})
+    task={'prompt':'Recover the token.','verifier':{'type':'contains_all','expected':['observed-token']}}
+    assert judge_trial(config,tmp_path,task,'observed-token',{'passed':True})['passed']
+    audit=read_json(tmp_path/'judge.json')
+    assert [call['status'] for call in audit['calls']] == ['completed','invalid','completed']
+    assert audit['calls'][1]['error'] == 'Judge requested an unsupported action'
 
 
 @pytest.mark.parametrize('failure',['http','json','path','verdict','loop','ambiguous'])
