@@ -57,7 +57,10 @@ class GuestSimulator(GuestAgent):
                 (directory / 'result.json').unlink(missing_ok=True)
             return {}
         if op == 'status':
-            return self.services[data['unit']]
+            result = dict(self.services[data['unit']])
+            if data.get('transcript_path'):
+                result['transcript'] = guest_agent.transcript_chunk(data['transcript_path'], data.get('transcript_offset', 0))
+            return result
         if op == 'stop':
             if self.fail_stop:
                 raise ValueError('guest disconnected')
@@ -128,6 +131,8 @@ def test_remote_run_stages_public_data_collects_scores_and_resumes(remote_spec, 
     for row in rows:
         directory = output / row['attempt_path']
         assert (directory / 'guest-output/model_calls/call-000001.json').is_file()
+        assert (directory / 'live-events.jsonl').read_bytes() == (directory / 'guest-output/events.jsonl').read_bytes()
+        assert read_json(directory / 'transport.json')['transcript_offset'] > 0
         assert read_json(directory / 'transport.json')['stopped']
         assert read_json(directory / 'evaluation.json')['evidence'][0] == 'guest-output/result.json'
     count = len([1 for _, op, _ in agent.calls if op == 'start'])
@@ -566,3 +571,52 @@ def test_preflight_rejects_unowned_or_malformed_hook_units(unit, monkeypatch):
     monkeypatch.setattr(guest_agent,'command',lambda *a,**kw:pytest.fail('Invalid cleanup touched guest services'))
     with pytest.raises(ValueError,match='Invalid recorded cleanup units'):
         guest_agent.dispatch(dict(op='preflight',units=[unit]))
+
+
+def test_live_transcript_bounded_incremental_bytes_and_optional_status(tmp_path, monkeypatch):
+    event = json.dumps({'type': 'response', 'text': '雪' * 10000}, ensure_ascii=False).encode() + b'\n'
+    (tmp_path / 'events.jsonl').write_bytes(event)
+    backend = ProxmoxBackend({'participant_vmid': 9403}, {})
+    record = {}
+    host = tmp_path / 'host'
+    host.mkdir()
+    offset = 0
+    while offset < len(event):
+        chunk = guest_agent.transcript_chunk(tmp_path, offset)
+        assert len(base64.b64decode(chunk['content'])) <= 12 * 1024
+        backend.record_transcript(host, record, chunk)
+        offset = record['transcript_offset']
+    assert (host / 'live-events.jsonl').read_bytes() == event
+    backend.record_transcript(host, record, {'error': 'PermissionError'})
+    assert record['transcript_warning']
+    assert (host / 'live-events.jsonl').read_bytes() == event
+    monkeypatch.setattr(guest_agent, 'service_status', lambda unit: {'SubState': 'running'})
+    missing = guest_agent.dispatch({'op': 'status', 'unit': 'demo', 'transcript_path': str(tmp_path / 'not-started')})
+    assert missing['SubState'] == 'running' and missing['transcript']['content'] == ''
+    (tmp_path / 'events.jsonl').unlink()
+    (tmp_path / 'events.jsonl').symlink_to(host / 'live-events.jsonl')
+    denied = guest_agent.dispatch({'op': 'status', 'unit': 'demo', 'transcript_path': str(tmp_path)})
+    assert denied['SubState'] == 'running' and denied['transcript']['error']
+
+
+def test_remote_transcript_visible_before_collection(remote_spec, tmp_path, monkeypatch):
+    path, backend, agent = remote_spec
+    output = tmp_path / 'results'
+    original = agent.call
+    observed = set()
+    def call(vmid, op, **data):
+        result = original(vmid, op, **data)
+        if op == 'status':
+            if data['unit'] not in observed:
+                observed.add(data['unit'])
+                result['SubState'] = 'running'
+            else:
+                transport = next(p for p in output.glob('trials/*/attempt-*/transport.json')
+                                 if read_json(p)['unit'] == data['unit'])
+                assert (transport.parent / 'live-events.jsonl').stat().st_size > 0
+                assert not (transport.parent / 'guest-output').exists()
+        return result
+    monkeypatch.setattr(agent, 'call', call)
+    backend.config['poll_seconds'] = 0
+    rows = run(path, output)
+    assert len(observed) == 2 and all(row['status'] == 'completed' for row in rows)

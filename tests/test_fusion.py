@@ -16,7 +16,7 @@ def config(tmp_path):
 
 def test_fusion_factory_and_host_lock(config):
     assert isinstance(GuestAgent(config), FusionGuestAgent)
-    backend=backends.create_backend(dict(backend=config,engine={}))
+    backend=backends.create_backend(dict(backend=config,engine={},execution={'network_policy':{'allow':[]}}))
     assert isinstance(backend,FusionBackend)
     assert vm_lock_path(config,9403).is_relative_to(Path.home())
     assert vm_lock_path(config,9403) != vm_lock_path(dict(type='proxmox'),9403)

@@ -252,6 +252,35 @@ class ProxmoxBackend:
         finally:
             self.agent.call(self.vmid, 'unlink', path=result['path'])
 
+    def record_transcript(self, directory, record, chunk):
+        """Optional live mirror; failures must never change the trial outcome."""
+        if not chunk:
+            return
+        try:
+            if chunk.get('error'):
+                raise ValueError('Guest transcript observation unavailable')
+            offset, next_offset = chunk['offset'], chunk['next_offset']
+            content = base64.b64decode(chunk['content'], validate=True)
+            if (type(offset) is not int or type(next_offset) is not int
+                    or offset < 0 or next_offset != offset + len(content)
+                    or len(content) > 12 * 1024):
+                raise ValueError('Invalid transcript chunk')
+            path = directory / 'live-events.jsonl'
+            if path.is_symlink():
+                raise ValueError('Transcript mirror cannot be a symlink')
+            with path.open('wb' if offset == 0 else 'r+b') as stream:
+                stream.seek(0, 2)
+                if stream.tell() != offset:
+                    raise ValueError('Transcript cursor does not match mirror')
+                stream.write(content)
+                stream.flush()
+            path.chmod(0o600)
+            record.update(transcript_offset=next_offset, transcript_size=chunk['size'],
+                          transcript_updated_at=datetime.now(timezone.utc).isoformat())
+            record.pop('transcript_warning', None)
+        except (OSError, ValueError, KeyError, TypeError):
+            record['transcript_warning'] = 'Live transcript temporarily unavailable; complete outputs are collected at trial end'
+
     def launch(self, directory, seconds, hint_controller=None):
         token = uuid.uuid4().hex
         record = {'vmid': self.vmid, 'unit': 'caf-eval-' + token,
@@ -294,7 +323,10 @@ class ProxmoxBackend:
             checkpoint('executing')
             deadline = started + seconds + 15
             while True:
-                status = self.agent.call(self.vmid, 'status', unit=record['unit'])
+                status = self.agent.call(self.vmid, 'status', unit=record['unit'],
+                                         transcript_path=record['path'] + '/attempt',
+                                         transcript_offset=record.get('transcript_offset', 0))
+                self.record_transcript(directory, record, status.pop('transcript', None))
                 checkpoint('executing', service_status=status)
                 if status.get('SubState') in {'exited', 'failed', 'dead'} or status.get('LoadState') == 'not-found':
                     break

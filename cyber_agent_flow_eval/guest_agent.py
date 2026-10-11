@@ -35,6 +35,27 @@ SUPPORTED_OPERATIONS = frozenset({
 })
 
 
+def transcript_chunk(directory, offset):
+    """Small optional observation; raw bytes preserve split JSON/UTF-8 records."""
+    if type(offset) is not int or offset < 0:
+        raise ValueError('Invalid transcript cursor')
+    path = Path(directory) / 'events.jsonl'
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return {'offset': 0, 'next_offset': 0, 'size': 0, 'content': ''}
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError('Transcript must be a regular file')
+        if offset > info.st_size:
+            offset = 0
+        stream.seek(offset)
+        content = stream.read(12 * 1024)
+        return {'offset': offset, 'next_offset': offset + len(content),
+                'size': info.st_size, 'content': base64.b64encode(content).decode()}
+
+
 def command(argv, timeout=20, allow_failure=False):
     result = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
     if result.returncode and not allow_failure:
@@ -270,7 +291,13 @@ print(json.dumps({'python': sys.version, 'executable': sys.executable, 'dependen
             changed.append(network)
         return {'changed': changed, 'gateway': gateway, 'interface': interface, 'networks': networks}
     if op == 'status':
-        return service_status(data['unit'])
+        result = service_status(data['unit'])
+        if data.get('transcript_path'):
+            try:
+                result['transcript'] = transcript_chunk(data['transcript_path'], data.get('transcript_offset', 0))
+            except (OSError, ValueError) as exc:
+                result['transcript'] = {'error': type(exc).__name__}
+        return result
     if op == 'stop':
         with service_control(data) as control:
             control.write('cancelled\n')
