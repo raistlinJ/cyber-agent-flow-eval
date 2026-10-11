@@ -121,8 +121,8 @@ def test_judge_cites_only_ranges_it_read(tmp_path, monkeypatch, bad):
     if bad:
         actions[1]["criteria"][0]["evidence"][0]["offset"] = 9999
 
-    def completion(config, messages, timeout):
-        return json.dumps(actions.pop(0)), {"prompt_tokens": 1, "output_tokens": 1}
+    def completion(config, messages, timeout, **kwargs):
+        return json.dumps(actions.pop(0) if len(actions)>1 else actions[0]), {"prompt_tokens": 1, "output_tokens": 1}
 
     monkeypatch.setattr(judge, "_completion", completion)
     config = resolve_judge(
@@ -167,7 +167,7 @@ def test_final_claim_alone_cannot_support_success(tmp_path, monkeypatch):
     for c in actions[1]["criteria"]:
         c["evidence"][0]["file"] = "worker-result.json"
     monkeypatch.setattr(
-        judge, "_completion", lambda *a: (json.dumps(actions.pop(0)), {})
+        judge, "_completion", lambda *a, **kwargs: (json.dumps(actions.pop(0) if len(actions)>1 else actions[0]), {})
     )
     with pytest.raises(JudgeError, match="direct execution evidence"):
         judge_trial(
@@ -272,7 +272,7 @@ def test_judge_only_runner_scores_tool_evidence_without_a_final_file(
             "errors": [],
         }
 
-    def completion(config, messages, timeout):
+    def completion(config, messages, timeout, **kwargs):
         if len(messages) == 2:
             return json.dumps(
                 {
@@ -397,7 +397,7 @@ def test_native_scenarioforge_v4_export_import_and_judge_runner(
         dict(action="verdict", criteria=verdict(("satisfied", "satisfied"))),
     ]
     monkeypatch.setattr(
-        judge, "_completion", lambda *args: (json.dumps(actions.pop(0)), {})
+        judge, "_completion", lambda *args, **kwargs: (json.dumps(actions.pop(0)), {})
     )
     rows = run(specification, tmp_path / "evaluation", launcher=launch, progress=None)
     assert rows[0]["verified_success"] is True and rows[0]["task_outcome"] == "success"

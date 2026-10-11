@@ -80,7 +80,7 @@ def test_judge_retries_one_malformed_json_action(tmp_path, monkeypatch):
                     'evidence':['worker-result.json']}),
     ])
     monkeypatch.setattr('cyber_agent_flow_eval.judge._completion',
-                        lambda config, messages, timeout: (next(replies), {'prompt_tokens':1,'output_tokens':1}))
+                        lambda config, messages, timeout, **kwargs: (next(replies), {'prompt_tokens':1,'output_tokens':1}))
     config=resolve_judge({'enabled':True,'model':{'provider':'openai','url':'http://judge.invalid/v1','name':'judge'},'max_turns':3})
     task={'prompt':'Recover the token.','verifier':{'type':'contains_all','expected':['observed-token']}}
     assert judge_trial(config,tmp_path,task,'observed-token',{'passed':True})['passed']
@@ -98,7 +98,7 @@ def test_judge_retries_one_unsupported_action(tmp_path, monkeypatch):
                     'evidence':['worker-result.json']}),
     ])
     monkeypatch.setattr('cyber_agent_flow_eval.judge._completion',
-                        lambda config, messages, timeout: (next(replies), {'prompt_tokens':1,'output_tokens':1}))
+                        lambda config, messages, timeout, **kwargs: (next(replies), {'prompt_tokens':1,'output_tokens':1}))
     config=resolve_judge({'enabled':True,'model':{'provider':'openai','url':'http://judge.invalid/v1','name':'judge'},'max_turns':3})
     task={'prompt':'Recover the token.','verifier':{'type':'contains_all','expected':['observed-token']}}
     assert judge_trial(config,tmp_path,task,'observed-token',{'passed':True})['passed']
@@ -115,7 +115,7 @@ def test_judge_can_search_evidence_before_verdict(tmp_path, monkeypatch):
                     'evidence':['worker-result.json']}),
     ])
     monkeypatch.setattr('cyber_agent_flow_eval.judge._completion',
-                        lambda config, messages, timeout: (next(replies), {'prompt_tokens':1,'output_tokens':1}))
+                        lambda config, messages, timeout, **kwargs: (next(replies), {'prompt_tokens':1,'output_tokens':1}))
     config=resolve_judge({'enabled':True,'model':{'provider':'openai','url':'http://judge.invalid/v1','name':'judge'}})
     task={'prompt':'Recover the token.','verifier':{'type':'contains_all','expected':['observed-token']}}
     assert judge_trial(config,tmp_path,task,'observed-token',{'passed':True})['passed']

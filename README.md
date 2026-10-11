@@ -420,7 +420,7 @@ judge:
     # Optional: set this in the coordinator/orchestrator's environment.
     api_key_env: JUDGE_API_KEY
   max_turns: 6          # evidence reads plus verdict, 2–32
-  timeout_seconds: 120 # total judge budget, independent of worker wall_seconds
+  timeout_seconds: 600 # total judge budget, independent of worker wall_seconds
   max_tokens: 2048     # output tokens per model request
 ```
 
@@ -507,3 +507,5 @@ For Both verification with a rubric, the score records weighted criterion comple
 Judge configuration also supports `monitor_progress` (default true), `progress_timeout_seconds` (default 20), and `progress_max_checks` (default 32). Intermediate reviews run only for rubric tasks with progressive hints enabled and usable assistance. A private `challenge_plan` maps rubric criteria to challenge steps, prerequisites and guide hints/solutions. It is never placed in worker input. Checkpoint judgments direct assistance; a separate final review scores the trial.
 
 Checkpoint evidence is frozen under `progress-checks/turn-XXXX/`, with hashes and a saved judge conversation; `progress-monitor.json` tracks cumulative milestones. Failed/unavailable checkpoint reviews stay unverified and release no assistance. Transfers and inference consume the worker wall-clock budget; time, usage and optionally priced cost are reported separately. See the [challenge plan schema](schemas/challenge-plan-v1.schema.json) and [workflow guide](../cyber-agent-flow-orchestrator/docs/rubric-experiments.md#scenario-derived-scaffold-and-intermediate-progress).
+
+Judge completions stream into `judge-events.jsonl` (including provider-emitted reasoning when available). Intermediate reviews retain their own streams under `progress-checks/`. Failed or truncated streams never count as a verdict. Servers that return a normal JSON response are also supported.

@@ -86,7 +86,7 @@ def observation(turn, final=None):
 
 
 def completion_for(statuses):
-    def completion(cfg, messages, timeout):
+    def completion(cfg, messages, timeout, **kwargs):
         if len(messages) == 2:
             assert "intermediate checkpoint" in messages[0]["content"]
             return json.dumps(
@@ -188,7 +188,7 @@ def test_claims_without_a_trace_and_judge_errors_do_not_advance_or_release(
 ):
     c = controller(tmp_path, limit=1)
     monkeypatch.setattr(
-        judge, "_completion", lambda *a: pytest.fail("No transcript should be judged")
+        judge, "_completion", lambda *a, **kwargs: pytest.fail("No transcript should be judged")
     )
     assert (
         c.respond(observation(1, final="I recovered FIRST_PRIVATE and SECOND_PRIVATE"))[
@@ -202,7 +202,7 @@ def test_claims_without_a_trace_and_judge_errors_do_not_advance_or_release(
         '{"type":"tool_result","result":"failed request"}\n'
     )
 
-    def unavailable(*args):
+    def unavailable(*args, **kwargs):
         raise judge.JudgeError("Judge endpoint unavailable")
 
     monkeypatch.setattr(judge, "_completion", unavailable)
@@ -321,7 +321,7 @@ def test_native_scaffold_runner_uses_checkpoints_then_independent_final_judge(
     reached = 1
     purposes = []
 
-    def completion(cfg, messages, timeout):
+    def completion(cfg, messages, timeout, **kwargs):
         intermediate = "intermediate checkpoint" in messages[0]["content"]
         if len(messages) == 2:
             purposes.append("progress" if intermediate else "final")

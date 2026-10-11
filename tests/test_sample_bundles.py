@@ -137,7 +137,7 @@ def test_native_bundle_and_evidence_scoring(
             errors=[],
         )
 
-    def completion(config, messages, timeout):
+    def completion(config, messages, timeout, **kwargs):
         if len(messages) == 2:
             return (
                 json.dumps(

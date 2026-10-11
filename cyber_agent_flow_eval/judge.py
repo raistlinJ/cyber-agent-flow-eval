@@ -54,7 +54,7 @@ def resolve_judge(value, participant_model=None):
     model.setdefault('ssl_verify', True)
     if type(model['ssl_verify']) is not bool:
         raise ValueError('judge.model.ssl_verify must be boolean')
-    for key, default, maximum in [('max_turns', 6, 32), ('timeout_seconds', 120, 3600), ('max_tokens', 2048, 16384)]:
+    for key, default, maximum in [('max_turns', 6, 32), ('timeout_seconds', 600, 3600), ('max_tokens', 2048, 16384)]:
         config.setdefault(key, default)
         positive(config[key], 'judge.' + key)
         if key == 'max_turns' and config[key] < 2:
@@ -215,17 +215,21 @@ class Evidence:
         return dict(query=query, results=results, scanned_bytes=scanned, truncated=truncated)
 
 
-def _completion(config, messages, timeout):
+def _completion(config, messages, timeout, on_delta=None):
+    from .judge_stream import completion_response
+    deadline = time.monotonic() + timeout
     model = config['model']
     base = model['url'].rstrip('/')
     ollama = model['provider'] == 'ollama_direct'
     if ollama:
         endpoint = base if base.endswith('/api/chat') else base + '/api/chat'
-        body = dict(model=model['name'],messages=messages,stream=False,format='json',
+        body = dict(model=model['name'],messages=messages,stream=on_delta is not None,format='json',
                     options={'temperature':0,'num_predict':config['max_tokens']})
     else:
         endpoint = base if base.endswith('/chat/completions') else base + ('/chat/completions' if base.endswith('/v1') else '/v1/chat/completions')
         body = dict(model=model['name'],messages=messages,temperature=0,max_tokens=config['max_tokens'],response_format={'type':'json_object'})
+        if on_delta is not None:
+            body.update(stream=True, stream_options={'include_usage':True})
         if urllib.parse.urlsplit(endpoint).hostname == 'api.openai.com':
             # The official API's completion limit supports reasoning models;
             # their default sampling settings must be left untouched.
@@ -239,14 +243,15 @@ def _completion(config, messages, timeout):
     context = ssl.create_default_context() if model['ssl_verify'] else ssl._create_unverified_context()
     try:
         with urllib.request.urlopen(request,timeout=timeout,context=context) as response:
+            if on_delta is not None:
+                return completion_response(response, ollama, on_delta, deadline)
             raw = response.read(2_000_001)
         if len(raw)>2_000_000:
             raise JudgeError('Judge response exceeded the size limit')
         data = json.loads(raw)
         text = data['message']['content'] if ollama else data['choices'][0]['message']['content']
-        usage = {'prompt_tokens':data.get('prompt_eval_count'), 'output_tokens':data.get('eval_count')} if ollama else {
-            'prompt_tokens':data.get('usage',{}).get('prompt_tokens'), 'output_tokens':data.get('usage',{}).get('completion_tokens')}
-        return text, usage
+        from .judge_stream import usage_of
+        return text, usage_of(data, ollama)
     except urllib.error.HTTPError as exc:
         if exc.code == 401:
             variable = model.get('api_key_env')
@@ -259,8 +264,14 @@ def _completion(config, messages, timeout):
             raise JudgeError('Judge authentication failed (HTTP 401): ' + detail +
                              '. Participant VM credentials are separate; set the host judge credential and restart the orchestrator.') from None
         raise JudgeError(f'Judge endpoint returned HTTP {exc.code}; check its URL, model and host API-key environment variable') from None
-    except (urllib.error.URLError, TimeoutError, OSError):
-        raise JudgeError('Judge endpoint unavailable or timed out; check connectivity from the orchestrator host') from None
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, TimeoutError):
+            raise JudgeError('Judge connection timed out before an HTTP response; check endpoint availability and routing from the orchestrator host') from None
+        raise JudgeError('Judge endpoint unavailable; check DNS, TLS and connectivity from the orchestrator host') from None
+    except TimeoutError:
+        raise JudgeError('Judge response timed out within its configured time budget') from None
+    except OSError:
+        raise JudgeError('Judge connection failed while receiving output; check endpoint availability from the orchestrator host') from None
     except (KeyError, IndexError, ValueError, TypeError):
         raise JudgeError('Judge endpoint returned an invalid model response') from None
 
@@ -329,6 +340,9 @@ Do not penalize or reward the experimental condition. Judge completion independe
              'execution_trace_files':evidence.trace_files, 'required_trace_files':evidence.required_trace_files,
              'execution_trace_reviewed':False, 'evidence_warning':evidence_warning}
     path = Path(directory)/'judge.json'
+    from .judge_stream import EventLog
+    stream_log = EventLog(Path(directory)/'judge-events.jsonl')
+    stream_log.emit('status', text='Judge review started', purpose=purpose)
     try:
         for turn in range(1,config['max_turns']+1):
             remaining = config['timeout_seconds'] - (time.monotonic()-started)
@@ -339,7 +353,13 @@ Do not penalize or reward the experimental condition. Judge completion independe
             write_json(path,audit)
             if progress is not None:
                 progress(f'turn {turn}/{config["max_turns"]}: requesting judge model')
-            text, usage = _completion(config,messages,remaining)
+            stream_log.context = {'turn':turn, 'purpose':purpose}
+            stream_log.emit('status', text='Requesting judge model')
+            try:
+                text, usage = _completion(config,messages,remaining,on_delta=stream_log.delta)
+            finally:
+                stream_log.flush()
+            stream_log.emit('status', text='Model response received', usage=usage)
             call.update(usage=usage,status='completed')
             messages.append(dict(role='assistant',content=text))
             try:
@@ -405,8 +425,11 @@ Do not penalize or reward the experimental condition. Judge completion independe
         raise JudgeError('Judge turn budget exceeded without a verdict')
     except JudgeError as exc:
         audit.update(status='error',error=str(exc))
+        stream_log.emit('error', text=str(exc))
         raise
     finally:
+        stream_log.flush()
+        stream_log.emit('status', text='Judge review '+audit['status'])
         audit['evidence_files_read'] = sorted(evidence.read)
         audit['evidence_ranges_read'] = evidence.ranges
         audit['execution_trace_reviewed'] = bool(evidence.read.intersection(evidence.required_trace_files))

@@ -312,7 +312,7 @@ def test_runner_requires_judge_and_deterministic_checks(specification,tmp_path,m
     raw['judge']={'enabled':True,'use_participant_model':True}
     specification.write_text(yaml.safe_dump(raw))
     calls=[]
-    def completion(config,messages,timeout):
+    def completion(config,messages,timeout, **kwargs):
         calls.append(config)
         if judge_errors:raise judge.JudgeError('Judge unavailable')
         if len(messages)==2:
