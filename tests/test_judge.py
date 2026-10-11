@@ -232,3 +232,24 @@ def test_official_openai_request_supports_reasoning_models(monkeypatch):
 def test_invalid_judge_config(change):
     value={'enabled':True,'model':{'provider':'openai','url':'http://127.0.0.1:11434/v1','name':'judge'},**change}
     with pytest.raises(ValueError):resolve_judge(value)
+
+
+@pytest.mark.parametrize('key_set', [False, True])
+def test_judge_401_identifies_host_credential_without_exposing_key(monkeypatch, key_set):
+    import urllib.error
+    variable = 'TEST_JUDGE_HOST_KEY'
+    if key_set:
+        monkeypatch.setenv(variable, 'private-credential')
+    else:
+        monkeypatch.delenv(variable, raising=False)
+    def unauthorized(request, **kwargs):
+        raise urllib.error.HTTPError(request.full_url, 401, 'Unauthorized', {}, None)
+    monkeypatch.setattr('urllib.request.urlopen', unauthorized)
+    config = resolve_judge({'enabled': True, 'model': {
+        'provider': 'openai', 'url': 'http://judge.invalid/v1', 'name': 'judge', 'api_key_env': variable}})
+    with pytest.raises(JudgeError) as error:
+        _completion(config, [{'role': 'user', 'content': 'Synthetic test'}], 10)
+    text = str(error.value)
+    assert 'HTTP 401' in text and variable in text and 'orchestrator host' in text
+    assert ('was rejected' if key_set else 'is not set') in text
+    assert 'private-credential' not in text

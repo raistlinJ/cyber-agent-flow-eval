@@ -248,6 +248,16 @@ def _completion(config, messages, timeout):
             'prompt_tokens':data.get('usage',{}).get('prompt_tokens'), 'output_tokens':data.get('usage',{}).get('completion_tokens')}
         return text, usage
     except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            variable = model.get('api_key_env')
+            if variable and not key:
+                detail = f'{variable} is not set on the orchestrator host'
+            elif variable:
+                detail = f'the key in orchestrator host variable {variable} was rejected'
+            else:
+                detail = 'no judge host API-key environment variable is configured'
+            raise JudgeError('Judge authentication failed (HTTP 401): ' + detail +
+                             '. Participant VM credentials are separate; set the host judge credential and restart the orchestrator.') from None
         raise JudgeError(f'Judge endpoint returned HTTP {exc.code}; check its URL, model and host API-key environment variable') from None
     except (urllib.error.URLError, TimeoutError, OSError):
         raise JudgeError('Judge endpoint unavailable or timed out; check connectivity from the orchestrator host') from None
