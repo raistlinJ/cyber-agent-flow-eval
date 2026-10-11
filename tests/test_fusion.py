@@ -98,3 +98,50 @@ def test_guest_agent_copy_preserves_transport_and_isolates_script(config, fusion
     copied.script='replacement capture helper'
     assert agent.script==original
     assert copied.script!=agent.script
+
+
+def test_fusion_download_copies_once_and_checks_bytes(config,tmp_path,monkeypatch):
+    import hashlib
+    content=b"native transfer"*20000
+    agent=GuestAgent(config)
+    rpc=[];copies=[]
+    def call(vmid,op,**data):
+        rpc.append(op)
+        assert op=='stat'
+        assert data['export_user']=='participant'
+        return {'size':len(content),'sha256':hashlib.sha256(content).hexdigest(),'transfer_path':'/tmp/exported'}
+    def copy(vmid,op,*args,**kwargs):
+        copies.append(op)
+        if op=='copyFileFromGuestToHost': Path(args[1]).write_bytes(content)
+    monkeypatch.setattr(agent,'call',call)
+    monkeypatch.setattr(agent,'_run',copy)
+    assert agent.get(9403,'/trial/evidence.zip')==content
+    assert rpc==['stat'] and copies==['copyFileFromGuestToHost','deleteFileInGuest']
+    monkeypatch.setattr(agent,'_run',lambda vmid,op,*a,**k:Path(a[1]).write_bytes(b'changed') if op=='copyFileFromGuestToHost' else None)
+    with pytest.raises(ValueError,match='checksum mismatch'):
+        agent.get(9403,'/trial/evidence.zip')
+
+
+def test_fusion_download_rejects_oversize_before_copy(config,monkeypatch):
+    agent=GuestAgent(config)
+    monkeypatch.setattr(agent,'call',lambda *a,**k:{'size':config['max_transfer_bytes']+1,'sha256':'none','transfer_path':'/tmp/exported'})
+    monkeypatch.setattr(agent,'_run',lambda vmid,op,*a,**k:None if op=='deleteFileInGuest' else pytest.fail('No unbounded copy'))
+    with pytest.raises(ValueError,match='max_transfer_bytes'):
+        agent.get(9403,'/trial/evidence.zip')
+
+
+def test_guest_export_is_private_bounded_and_snapshot_stable(tmp_path):
+    import os,pwd,hashlib
+    from cyber_agent_flow_eval import guest_agent
+    source=tmp_path/'private-worker-log'
+    source.write_bytes(b'evidence')
+    row=guest_agent.dispatch({'op':'stat','path':str(source),'limit':100,'export_user':pwd.getpwuid(os.getuid()).pw_name})
+    exported=Path(row['transfer_path'])
+    try:
+        source.write_bytes(b'changed')
+        assert exported.read_bytes()==b'evidence'
+        assert exported.stat().st_mode & 0o777 == 0o600
+        assert row['sha256']==hashlib.sha256(b'evidence').hexdigest()
+    finally: exported.unlink()
+    with pytest.raises(ValueError,match='max_transfer_bytes'):
+        guest_agent.dispatch({'op':'stat','path':str(source),'limit':1,'export_user':pwd.getpwuid(os.getuid()).pw_name})

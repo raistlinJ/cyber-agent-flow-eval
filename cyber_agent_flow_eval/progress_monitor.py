@@ -69,6 +69,9 @@ class ProgressMonitor:
                 )
             folder.parent.mkdir(exist_ok=True)
             source = self.snapshot(folder)
+            check["snapshot_seconds"] = time.monotonic()-started
+            if self.progress:
+                self.progress(f"turn {turn}: evidence snapshot ready in {check['snapshot_seconds']:.1f}s")
             references = self.directory / "reference-material.json"
             if (
                 references.is_file()
@@ -84,7 +87,7 @@ class ProgressMonitor:
             remaining = timeout - (time.monotonic() - started)
             if remaining < 1:
                 raise JudgeError(
-                    "Progress evidence transfer exhausted the checkpoint budget"
+                    f"Progress evidence transfer took {check['snapshot_seconds']:.1f}s and exhausted the {timeout:g}s checkpoint budget; increase the progress-check time limit or inspect guest transfer performance"
                 )
             from .evidence_manifest import capture
 
@@ -92,6 +95,7 @@ class ProgressMonitor:
             config = dict(self.config, timeout_seconds=remaining)
             if self.progress:
                 self.progress(f"turn {turn}: checking intermediate challenge evidence")
+            review_started = time.monotonic()
             verdict = judge_trial(
                 config,
                 source,
@@ -101,6 +105,7 @@ class ProgressMonitor:
                 progress=self.progress,
                 purpose="progress",
             )
+            check["judge_seconds"] = time.monotonic()-review_started
             new = False
             for finding in verdict["criteria"]:
                 previous = self.criteria.get(finding["id"])

@@ -189,6 +189,31 @@ print(json.dumps({'python': sys.version, 'executable': sys.executable, 'dependen
             raise ValueError('Transfer requires a regular file')
         if path.stat().st_size > data['limit']:
             raise ValueError('File exceeds max_transfer_bytes')
+        if data.get('export_user'):
+            user = pwd.getpwnam(data['export_user'])
+            fd, exported = tempfile.mkstemp(prefix='caf-fusion-export-')
+            try:
+                # Root-owned worker output must be copied to an owner-only
+                # snapshot that the VMware Tools guest login can read.
+                total, digest = 0, hashlib.sha256()
+                source_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                with os.fdopen(source_fd,'rb') as source, os.fdopen(fd,'wb') as target:
+                    fd = None
+                    if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                        raise ValueError('Transfer requires a regular file')
+                    while block := source.read(65536):
+                        total += len(block)
+                        if total > data['limit']:
+                            raise ValueError('File exceeds max_transfer_bytes')
+                        digest.update(block)
+                        target.write(block)
+                    target.flush()
+                    os.fchown(target.fileno(),user.pw_uid,user.pw_gid)
+                return {'size':total,'sha256':digest.hexdigest(),'transfer_path':exported}
+            except BaseException:
+                if fd is not None: os.close(fd)
+                Path(exported).unlink(missing_ok=True)
+                raise
         return file_identity(path)
     if op == 'read':
         with Path(data['path']).open('rb') as stream:

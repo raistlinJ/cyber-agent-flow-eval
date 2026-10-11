@@ -1,5 +1,6 @@
 """Fusion guest RPC through VMware Tools; shares the bounded Linux worker."""
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -131,6 +132,32 @@ os.replace(source+'.result.tmp',source+'.result')
                     except ValueError:pass
                 try:self._run(vmid,'deleteDirectoryInGuest',remote_dir)
                 except ValueError:pass
+
+    def get(self, vmid, path):
+        """One native copy of a private snapshot instead of per-16 KiB RPCs."""
+        row = inventory(self.config['inventory_file'])[str(vmid)]
+        identity = self.call(vmid, 'stat', path=path, limit=self.config['max_transfer_bytes'],
+                             export_user=row['username'])
+        # Application-specific helper scripts may implement only stat/read.
+        # Retain their existing transfer contract, with no guest-side changes.
+        exported = identity.get('transfer_path')
+        if not exported:
+            return super().get(vmid,path)
+        try:
+            size = identity['size']
+            if type(size) is not int or not 0 <= size <= self.config['max_transfer_bytes']:
+                raise ValueError('Download exceeds max_transfer_bytes')
+            with tempfile.TemporaryDirectory(prefix='caf-fusion-download-') as folder:
+                local = Path(folder)/'payload'
+                local.touch(mode=0o600)
+                self._run(vmid, 'copyFileFromGuestToHost', exported, str(local))
+                with local.open('rb') as stream:
+                    content = stream.read(size+1)
+                if len(content) != size or hashlib.sha256(content).hexdigest() != identity['sha256']:
+                    raise ValueError('Guest download checksum mismatch; file changed during transfer')
+                return content
+        finally:
+            self._run(vmid,'deleteFileInGuest',exported)
 
 
 class FusionBackend(ProxmoxBackend):
