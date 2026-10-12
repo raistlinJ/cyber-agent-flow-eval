@@ -64,6 +64,43 @@ class RecordingClient:
             self.records.append(record)
 
 
+class ActivityBudget:
+    """Participant time excludes bounded waits for host assistance."""
+    def __init__(self, seconds, clock=time.monotonic):
+        self.clock, self.seconds = clock, seconds
+        self.started = clock()
+        self.wait_started = None
+        self.wait_seconds = 0.0
+
+    def pause(self):
+        if self.wait_started is None:
+            self.wait_started = self.clock()
+
+    def resume(self):
+        if self.wait_started is not None:
+            self.wait_seconds += self.clock() - self.wait_started
+            self.wait_started = None
+
+    @property
+    def active_seconds(self):
+        pending = self.clock() - self.wait_started if self.wait_started is not None else 0
+        return max(0, self.clock() - self.started - self.wait_seconds - pending)
+
+    async def run(self, operation):
+        task = asyncio.create_task(operation)
+        try:
+            while not task.done():
+                remaining = self.seconds - self.active_seconds
+                if remaining <= 0:
+                    raise TimeoutError('Participant active-time budget exceeded')
+                await asyncio.wait({task}, timeout=min(.1, remaining))
+            return await task
+        finally:
+            if not task.done():
+                task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
 async def execute(config, directory):
     directory = Path(directory)
     started = time.monotonic()
@@ -96,6 +133,7 @@ async def execute(config, directory):
                     errors.append(f'Timeout cleanup failed: {exc}')
 
     model, limits = config['model'], config['execution']
+    budget = ActivityBudget(limits.get('wall_seconds', float('inf')))
     session_class = load_session(config['engine'])
     session_options = {}
     if limits.get('auto_approve_dangerous', False):
@@ -116,10 +154,17 @@ async def execute(config, directory):
     status = 'completed'
     try:
         async def progressive_hint(observation):
+            budget.pause()
+            try:
+                return await asyncio.wait_for(exchange_hint(observation), timeout=limits.get('assistance_timeout_seconds', 660))
+            finally:
+                budget.resume()
+
+        async def exchange_hint(observation):
             # Only observations leave the worker; unreleased hints remain on the host.
             write_json(directory / 'messages.json', plain(session.messages))
             sequence = observation['turn']
-            request = dict(observation, sequence=sequence,
+            request = dict(observation, sequence=sequence, participant_active_seconds=budget.active_seconds,
                            final_truncated=len(observation.get('final_answer') or '') > 1200,
                            final_answer=(observation.get('final_answer') or '')[:1200] or None)
             # QGA stdout is bounded, including JSON escaping of Unicode text.
@@ -147,13 +192,17 @@ async def execute(config, directory):
         write_json(directory / 'checkpoint.json', plain(session.messages))
         recorder = RecordingClient(session._client, directory / 'model_calls', origin=started)
         session._client = recorder
-        await session.chat(config['prompt'], cancel_event=cancel, **({'progress_callback': progressive_hint} if hints_enabled else {}))
+        await budget.run(session.chat(config['prompt'], cancel_event=cancel, **({'progress_callback': progressive_hint} if hints_enabled else {})))
         if interaction:
             status = 'interaction_required'
         elif errors:
             status = 'error'
         elif cancel.is_set():
             status = 'cancelled'
+    except TimeoutError as exc:
+        cancel.set()
+        status = 'timeout'
+        errors.append(str(exc) or 'Host assistance response exceeded its bounded wait limit')
     except Exception as exc:
         status = 'error'
         errors.append(f'{type(exc).__name__}: {exc}')
@@ -172,6 +221,8 @@ async def execute(config, directory):
                   if m.get('role') == 'assistant' and m.get('content')), '')
     return {'status': status, 'final_answer': final, 'errors': errors,
             'elapsed_seconds': time.monotonic() - started,
+            'participant_active_seconds': budget.active_seconds,
+            'assistance_wait_seconds': budget.wait_seconds,
             'model_calls': recorder.count if recorder else 0,
             'turn_budget_exhausted': any(e.get('type') == 'chat_done' and 'Max iterations' in e.get('message', '') for e in events),
             'provider_usage': [r.get('response', {}).get('raw', r.get('response', {})).get('usage')

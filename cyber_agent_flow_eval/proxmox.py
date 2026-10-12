@@ -314,10 +314,14 @@ class ProxmoxBackend:
         if hint_controller and hint_controller.monitor:
             hint_controller.monitor.snapshot = lambda destination: self.progress_snapshot(record, destination)
         started = time.monotonic()
+        assistance_seconds = 0.0
+        input_limits = read_json(directory / 'input.json')['execution']
+        # Keep a finite systemd backstop even if the coordinator disconnects.
+        safety_seconds = seconds + (input_limits.get('max_turns', 1) * input_limits.get('assistance_timeout_seconds', 660) if hint_controller else 0) + 15
         status = {}
         try:
             checkpoint('starting', execution_started_at=datetime.now(timezone.utc).isoformat())
-            self.agent.call(self.vmid, 'start', path=record['path'], unit=record['unit'], seconds=seconds,
+            self.agent.call(self.vmid, 'start', path=record['path'], unit=record['unit'], seconds=safety_seconds,
                             user=self.config['user'], engine=self.engine,
                             environment_file=self.config.get('environment_file'))
             checkpoint('executing')
@@ -330,14 +334,28 @@ class ProxmoxBackend:
                 checkpoint('executing', service_status=status)
                 if status.get('SubState') in {'exited', 'failed', 'dead'} or status.get('LoadState') == 'not-found':
                     break
-                if time.monotonic() >= deadline:
+                if time.monotonic() >= min(deadline, started + safety_seconds):
                     status['Result'] = 'timeout'
                     break
                 if hint_controller:
                     request = self.agent.call(self.vmid, 'hint_request', path=record['path'] + '/attempt')
                     if request and request.get('sequence') != (hint_controller.response or {}).get('sequence'):
-                        response = hint_controller.respond(request, timeout_seconds=max(0, deadline - time.monotonic() - 16))
-                        self.agent.call(self.vmid, 'hint_reply', path=record['path'] + '/attempt', response=response)
+                        waiting = time.monotonic()
+                        try:
+                            response = hint_controller.respond(request)
+                            self.agent.call(self.vmid, 'hint_reply', path=record['path'] + '/attempt', response=response)
+                        finally:
+                            waited = time.monotonic() - waiting
+                            assistance_seconds += waited
+                            active = request.get('participant_active_seconds')
+                            if type(active) in (int, float) and 0 <= active <= seconds:
+                                # The worker pauses before publishing the request.
+                                # Use its clock to exclude guest/host transfer and polling delays too.
+                                deadline = time.monotonic() + seconds - active + 15
+                            else:
+                                deadline += waited
+                            checkpoint('executing', assistance_wait_seconds=assistance_seconds,
+                                       participant_active_seconds=active if type(active) in (int, float) else time.monotonic() - started - assistance_seconds)
                 time.sleep(self.config['poll_seconds'])
         finally:
             checkpoint('stopping')
@@ -354,6 +372,9 @@ class ProxmoxBackend:
         else:
             result = {'status': 'error', 'final_answer': None, 'errors': ['Guest worker failed; see guest-output/worker.log']}
         result['execution_seconds'] = record['execution_seconds']
+        result.setdefault('assistance_wait_seconds', assistance_seconds)
+        result.setdefault('participant_active_seconds', max(0, record['execution_seconds'] - assistance_seconds))
+        checkpoint('collected', participant_active_seconds=result['participant_active_seconds'], assistance_wait_seconds=result['assistance_wait_seconds'])
         return result
 
     def fetch_suite(self, guest_path, output):

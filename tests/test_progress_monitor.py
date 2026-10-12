@@ -281,7 +281,8 @@ def test_native_scaffold_runner_uses_checkpoints_then_independent_final_judge(
         flow,
         graph,
         rendered_hints=[dict(node_id="n1", text="Inspect the entry.")],
-        rendered_solutions=[],
+        rendered_solutions=[dict(node_id="n1", text="curl http://192.0.2.10/proof"),
+                            dict(node_id="n2", text="curl http://192.0.2.11/proof")],
     )
     xml = tmp_path / "lab.xml"
     xml.write_text('<Scenarios><Scenario name="Lab"/></Scenarios>')

@@ -511,3 +511,17 @@ Checkpoint evidence is frozen under `progress-checks/turn-XXXX/`, with hashes an
 Judge completions stream into `judge-events.jsonl` (including provider-emitted reasoning when available). Intermediate reviews retain their own streams under `progress-checks/`. Failed or truncated streams never count as a verdict. Servers that return a normal JSON response are also supported.
 
 Fusion downloads use one native VMware Tools file copy with size and SHA-256 verification. Intermediate progress audits record snapshot-transfer and judge-review timings separately so transfer delays cannot be mistaken for slow inference.
+
+
+Participant `execution.wall_seconds` measures active worker time. Waiting for the
+host's progress evidence transfer and judge review is excluded. Each assistance
+exchange is bounded; systemd retains a finite backstop if the host disconnects.
+Results and CSV expose `participant_active_seconds`, `assistance_wait_seconds`,
+and total `execution_seconds` separately. After a released solution and a further
+`max_tries_before_solution + hint_stalled_turns` without completion, a challenge is
+deferred so independent challenges can proceed. Deferral never counts as success
+or satisfies a prerequisite; `assistance.json` and progress reports preserve it.
+Judge citations use the actual returned byte range; requested limits at EOF are
+clipped to the file size, while citations to unread bytes remain invalid.
+
+Compatible OpenAI judge endpoints receive a JSON action schema to constrain syntax and action names. An explicit unsupported-schema rejection falls back to JSON-object mode within the same request time budget. Authentication and unrelated validation errors never trigger fallback. Host rubric and evidence validation still determine whether a verdict is accepted.

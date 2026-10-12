@@ -187,7 +187,12 @@ def launch(directory, seconds, hint_controller=None):
             deadline = time.monotonic() + seconds
             while process.poll() is None:
                 if hint_controller:
-                    hint_controller.poll(timeout_seconds=max(0, deadline - time.monotonic() - 1))
+                    waiting = time.monotonic()
+                    active = hint_controller.poll()
+                    if type(active) in (int, float) and 0 <= active <= seconds:
+                        deadline = time.monotonic() + seconds - active + 1
+                    else:
+                        deadline += time.monotonic() - waiting
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise subprocess.TimeoutExpired(process.args, seconds)
@@ -233,7 +238,7 @@ def export(output):
                'participant_prompt_tokens', 'participant_output_tokens', 'participant_cost_usd',
                'judge_cost_usd', 'progress_monitor_enabled', 'progress_monitor_checks', 'progress_monitor_errors', 'progress_monitor_seconds', 'progress_monitor_calls', 'progress_monitor_prompt_tokens', 'progress_monitor_output_tokens', 'progress_monitor_cost_usd', 'participant_usage_complete',
                'verified_success', 'judge_enabled', 'judge_passed', 'judge_score', 'judge_seconds', 'judge_calls', 'judge_prompt_tokens', 'judge_output_tokens', 'judge_execution_trace_reviewed', 'judge_evidence_warning', 'judge_evidence_files', 'deterministic_passed', 'judge_error', 'provide_progressive_hints', 'progressive_hints_available', 'progressive_hints_reason', 'hint_stalled_turns', 'hints_released', 'facts_revealed', 'max_tries_before_solution', 'solutions_released', 'solution_provided', 'retries_requested', 'solution_assisted_success', 'hints_assisted_success', 'assisted_success', 'unassisted_success', 'score', 'suite_id', 'package_hash', 'core_session_id', 'readiness_checked_at',
-               'elapsed_seconds', 'execution_seconds', 'flags_observed', 'progress_score', 'time_to_first_flag_seconds', 'attempt_path']
+               'elapsed_seconds', 'participant_active_seconds', 'assistance_wait_seconds', 'execution_seconds', 'flags_observed', 'progress_score', 'time_to_first_flag_seconds', 'attempt_path']
     temporary = output / 'dataset.csv.tmp'
     with temporary.open('w', newline='') as stream:
         writer = csv.DictWriter(stream, fieldnames=columns, extrasaction='ignore')
@@ -333,6 +338,8 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
             participant_execution = {key: value for key, value in spec['execution'].items() if key not in {'target_lock', 'progress_seconds', 'hint_stalled_turns', 'max_tries_before_solution'}}
             hints_enabled = condition.get('provide_progressive_hints', spec['execution'].get('provide_progressive_hints', False))
             participant_execution['provide_progressive_hints'] = hints_enabled
+            if hints_enabled:
+                participant_execution['assistance_timeout_seconds'] = spec.get('judge', {}).get('progress_timeout_seconds', 600) + 60
             participant = {'model': spec['model'], 'execution': participant_execution, 'engine': spec['engine'],
                            'prompt': task['prompt'], 'tools': condition['tools'],
                            'guidance': '\n\n'.join(g['text'] for g in condition['guidance_snapshot']),

@@ -75,6 +75,9 @@ class HintController:
         self.solutions = []
         self.completed_challenges = set()
         self.completed_steps = set()
+        self.deferred_steps = set()
+        self.active_step = None
+        self.step_started_turn = 0
         self.plan = metadata.get("challenge_plan") or (task or {}).get("challenge_plan")
         self.monitor = None
         self.monitor_error = None
@@ -242,6 +245,7 @@ class HintController:
                 progress_monitor_enabled=self.monitor is not None,
                 progress_monitor_error=self.monitor_error,
                 completed_steps=sorted(self.completed_steps),
+                deferred_steps=sorted(self.deferred_steps),
                 tries_without_progress=self.tries_without_progress,
                 available=self.available,
                 unavailable_reason=self.unavailable_reason,
@@ -361,12 +365,24 @@ class HintController:
             self.tries_without_progress >= self.policy["max_tries_before_solution"]
         )
         used = {e["id"] for e in self.events}
+        # A released solution is assistance, never proof of completion. After a
+        # bounded opportunity to use it, defer that step and try independent ones.
+        if self.plan and self.monitor:
+            for step in self.plan["steps"]:
+                release = next((e for e in self.events if e.get("solution") and e.get("step_id") == step["id"]), None)
+                if (release and step["id"] not in self.completed_steps and step["id"] not in self.deferred_steps
+                        and turn - release["turn"] >= self.policy["max_tries_before_solution"] + self.policy["stalled_turns"]):
+                    self.deferred_steps.add(step["id"])
+                    self.feedback.append(dict(turn=turn, at=datetime.now(timezone.utc).isoformat(),
+                        step_id=step["id"], reason="solution_exhausted_defer", verified=False))
+            self.monitor.deferred = self.deferred_steps - self.completed_steps
+            self.monitor.save()
         current_step = (
             next(
                 (
                     s
                     for s in self.plan["steps"]
-                    if s["id"] not in self.completed_steps
+                    if s["id"] not in self.completed_steps | self.deferred_steps
                     and set(s["requires"]) <= self.completed_steps
                 ),
                 None,
@@ -374,6 +390,12 @@ class HintController:
             if self.plan
             else None
         )
+        if current_step and self.active_step != current_step["id"]:
+            self.active_step = current_step["id"]
+            self.step_started_turn = turn
+        if current_step:
+            self.tries_without_progress = min(self.tries_without_progress, turn - self.step_started_turn + 1)
+            solution_due = self.tries_without_progress >= self.policy["max_tries_before_solution"]
         current = next(
             (
                 item
@@ -468,7 +490,14 @@ class HintController:
                         self.known.add(fact["id"])
                         self.revealed.add(fact["id"])
             self.last_progress = turn
-        if not hint and failed_final and not solution_due and self.available:
+        if not hint and self.plan and self.deferred_steps:
+            if current_step:
+                hint = "An earlier challenge remains unverified after solution assistance. Try the next independent challenge: " + current_step["title"] + ". Do not claim deferred challenges are solved."
+            elif failed_final:
+                # End cleanly with truthful partial evidence; prerequisites of
+                # deferred steps must not be treated as satisfied.
+                hint = None
+        if not hint and failed_final and not solution_due and self.available and not self.deferred_steps:
             # A bad final answer normally ends CAF's loop when the callback
             # returns None. Ask it to retry so it can reach the configured limit,
             # without disclosing a hint early or consuming a hint release.
@@ -488,10 +517,15 @@ class HintController:
     def poll(self, timeout_seconds=None):
         path = self.directory / "hint-request.json"
         if path.exists():
+            request = read_json(path)
+            if self.response and request.get("sequence") == self.response.get("sequence"):
+                return None
             write_json(
                 self.directory / "hint-response.json",
-                self.respond(read_json(path), timeout_seconds),
+                self.respond(request, timeout_seconds),
             )
+            return request.get("participant_active_seconds")
+        return None
 
 
 def metrics(directory, enabled, success):
@@ -515,6 +549,7 @@ def metrics(directory, enabled, success):
         return sum(values) if values and all(type(v) is int for v in values) else None
 
     return dict(
+        deferred_steps=audit.get("deferred_steps", []),
         progress_monitor_enabled=audit.get("progress_monitor_enabled", False),
         progress_monitor_checks=len(checks),
         progress_monitor_errors=sum(c["status"] == "error" for c in checks),

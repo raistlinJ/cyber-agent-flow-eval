@@ -40,6 +40,7 @@ class ProgressMonitor:
         self.checks = []
         self.snapshot = lambda destination: snapshot_local(self.directory, destination)
         self.completed = set()
+        self.deferred = set()
         self.plan = task.get("challenge_plan")
 
     def check(self, request, timeout_seconds=None):
@@ -167,7 +168,9 @@ class ProgressMonitor:
                 "completed"
                 if step["id"] in self.completed
                 else (
-                    "partial"
+                    "deferred"
+                    if step["id"] in self.deferred
+                    else "partial"
                     if "satisfied" in states
                     else "unmet" if all(s == "unmet" for s in states) else "unverified"
                 )
