@@ -228,10 +228,16 @@ def test_official_openai_request_supports_reasoning_models(monkeypatch):
     assert requests[0].full_url=='https://api.openai.com/v1/chat/completions'
 
 
-@pytest.mark.parametrize('change',[{'enabled':'yes'},{'max_turns':0},{'timeout_seconds':False},{'max_tokens':20000},{'model':{'provider':'openai','url':'http://user:secret@host','name':'judge'}}])
+@pytest.mark.parametrize('change',[{'enabled':'yes'},{'max_turns':0},{'timeout_seconds':False},{'max_tokens':20000},{'progress_timeout_seconds':601},{'model':{'provider':'openai','url':'http://user:secret@host','name':'judge'}}])
 def test_invalid_judge_config(change):
     value={'enabled':True,'model':{'provider':'openai','url':'http://127.0.0.1:11434/v1','name':'judge'},**change}
     with pytest.raises(ValueError):resolve_judge(value)
+
+
+def test_progress_judge_timeout_defaults_to_full_judge_budget():
+    config = resolve_judge({'enabled': True, 'model': {
+        'provider': 'openai', 'url': 'http://127.0.0.1:11434/v1', 'name': 'judge'}})
+    assert config['progress_timeout_seconds'] == 600
 
 
 @pytest.mark.parametrize('key_set', [False, True])

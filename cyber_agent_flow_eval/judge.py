@@ -29,7 +29,7 @@ def resolve_judge(value, participant_model=None):
     config.setdefault('monitor_progress', True)
     if type(config['monitor_progress']) is not bool:
         raise ValueError('judge.monitor_progress must be boolean')
-    for key, default, maximum in [('progress_timeout_seconds', 20, 120), ('progress_max_checks', 32, 1000)]:
+    for key, default, maximum in [('progress_timeout_seconds', 600, 600), ('progress_max_checks', 32, 1000)]:
         config.setdefault(key, default)
         positive(config[key], 'judge.' + key)
         if config[key] > maximum:
