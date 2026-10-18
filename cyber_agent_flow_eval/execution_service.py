@@ -10,6 +10,7 @@ import os
 import threading
 import time
 from pathlib import Path
+from datetime import datetime, timezone
 
 from cyber_agent_flow_eval.storage import write_json
 from .engine import load_session
@@ -67,7 +68,7 @@ class RecordingClient:
 class ActivityBudget:
     """Participant time excludes bounded waits for host assistance."""
     def __init__(self, seconds, clock=time.monotonic):
-        self.clock, self.seconds = clock, seconds
+        self.clock, self.seconds = clock, seconds or float("inf")
         self.started = clock()
         self.wait_started = None
         self.wait_seconds = 0.0
@@ -110,7 +111,7 @@ async def execute(config, directory):
 
     def on_event(event):
         nonlocal interaction
-        event = dict(event, _eval_elapsed_seconds=time.monotonic() - started)
+        event = dict(event, _eval_elapsed_seconds=time.monotonic() - started, _eval_at=datetime.now(timezone.utc).isoformat())
         events.append(plain(event))
         # _emit suppresses callback errors, so retain them and fail the result.
         try:
@@ -156,7 +157,7 @@ async def execute(config, directory):
         async def progressive_hint(observation):
             budget.pause()
             try:
-                return await asyncio.wait_for(exchange_hint(observation), timeout=limits.get('assistance_timeout_seconds', 660))
+                return await asyncio.wait_for(exchange_hint(observation), timeout=limits.get('assistance_timeout_seconds', 660) or None)
             finally:
                 budget.resume()
 
@@ -185,9 +186,9 @@ async def execute(config, directory):
                 await asyncio.sleep(.1)
             return None
 
-        hints_enabled = limits.get('provide_progressive_hints', False)
+        hints_enabled = limits.get('provide_progressive_hints', False) or limits.get('monitor_progress', False)
         if hints_enabled and 'progress_callback' not in inspect.signature(session.chat).parameters:
-            raise ValueError('Progressive hints require an updated cyber-agent-flow checkout on the participant VM')
+            raise ValueError('Progress monitoring and hints require an updated cyber-agent-flow checkout on the participant VM')
         await session.start()
         write_json(directory / 'checkpoint.json', plain(session.messages))
         recorder = RecordingClient(session._client, directory / 'model_calls', origin=started)

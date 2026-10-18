@@ -418,7 +418,8 @@ def test_archive_symlink_and_expansion_limits(tmp_path):
         unpack(content.getvalue(), tmp_path, 100, lambda n: True)
 
 
-def test_guest_service_uses_user_and_cgroup_deadline(config, tmp_path, monkeypatch):
+@pytest.mark.parametrize("seconds",[12,0])
+def test_guest_service_uses_user_and_cgroup_deadline(config, tmp_path, monkeypatch, seconds):
     monkeypatch.setattr(guest_agent, 'CONTROL_DIR', tmp_path / 'controls')
     root = tmp_path / 'run'
     (root / 'attempt').mkdir(parents=True)
@@ -426,11 +427,11 @@ def test_guest_service_uses_user_and_cgroup_deadline(config, tmp_path, monkeypat
         (root / 'attempt' / name).write_text('{}')
     captured = []
     monkeypatch.setattr(guest_agent, 'command', lambda argv, **kw: captured.append(argv))
-    guest_agent.dispatch({'op': 'start', 'path': str(root), 'unit': 'caf-eval-test', 'seconds': 12,
+    guest_agent.dispatch({'op': 'start', 'path': str(root), 'unit': 'caf-eval-test', 'seconds': seconds,
                           'user': config['user'], 'engine': {'path': '/opt/CAF with spaces', 'python': '/opt/venv/bin/python'},
                           'environment_file': '/etc/caf.env'})
     argv = captured[0]
-    assert '--property=RuntimeMaxSec=12' in argv
+    assert '--property=RuntimeMaxSec='+str(seconds or 'infinity') in argv
     assert '--property=KillMode=control-group' in argv
     assert '--property=ExitType=cgroup' in argv
     assert '--property=EnvironmentFile=/etc/caf.env' in argv

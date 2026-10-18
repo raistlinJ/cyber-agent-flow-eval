@@ -231,7 +231,7 @@ print(json.dumps({'python': sys.version, 'executable': sys.executable, 'dependen
         # systemd owns the entire tool process tree even if the host disconnects.
         argv = ['systemd-run', '--quiet', '--unit=' + data['unit'],
                 '--property=Type=exec', '--property=ExitType=cgroup', '--property=RemainAfterExit=yes',
-                '--property=RuntimeMaxSec=' + str(data['seconds']),
+                '--property=RuntimeMaxSec=' + (str(data['seconds']) if data['seconds'] else 'infinity'),
                 '--property=TimeoutStopSec=5', '--property=KillMode=control-group',
                 '--property=User=' + data['user'],
                 '--property=WorkingDirectory=' + data['engine']['path'],

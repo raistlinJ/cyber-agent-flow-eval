@@ -128,8 +128,11 @@ def resolve(path):
     if not isinstance(checkpoints, list) or any(type(v) is not int or v <= 0 for v in checkpoints) or len(checkpoints) != len(set(checkpoints)):
         raise ValueError('execution.progress_seconds must contain unique positive integer checkpoints')
     execution['progress_seconds'] = sorted(checkpoints)
-    for key in ['wall_seconds', 'max_turns', 'tool_timeout', 'context_window']:
+    for key in ['max_turns', 'context_window']:
         positive(execution[key], key)
+    for key in ['wall_seconds', 'tool_timeout']:
+        if type(execution[key]) is not int or execution[key] < 0:
+            raise ValueError(key + ' must be a nonnegative integer; 0 means no timeout')
     policy = execution['network_policy']
     fields(policy, ['allow', 'disallow'], ['allow', 'disallow'], 'network_policy')
     strings(policy['allow'], 'allow'); strings(policy['disallow'], 'disallow')

@@ -60,7 +60,7 @@ def test_invalid_spec_rejected(specification, change):
     elif change == 'duplicate':
         raw['tasks'].append(raw['tasks'][0])
     elif change == 'budget':
-        raw['execution']['wall_seconds'] = 0
+        raw['execution']['wall_seconds'] = -1
     else:
         raw['model']['seed'] = 42
     specification.write_text(yaml.safe_dump(raw))

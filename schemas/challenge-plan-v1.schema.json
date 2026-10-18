@@ -68,6 +68,23 @@
               "maxLength": 1500
             }
           },
+          "coaching": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["tier", "sequence", "interpretation", "next_action", "success_signal", "source"],
+              "properties": {
+                "tier": {"type": "string", "enum": ["low", "medium", "high"]},
+                "sequence": {"type": "integer", "minimum": 1},
+                "interpretation": {"type": "string", "minLength": 1, "maxLength": 1500},
+                "next_action": {"type": "string", "minLength": 1, "maxLength": 1500},
+                "success_signal": {"type": "string", "minLength": 1, "maxLength": 2000},
+                "source": {"type": "string", "minLength": 1, "maxLength": 200}
+              }
+            }
+          },
           "solution": {
             "type": "string",
             "maxLength": 16000

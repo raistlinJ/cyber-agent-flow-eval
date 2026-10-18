@@ -68,8 +68,8 @@ def completion_response(response, ollama, callback, deadline):
         return text, usage
     parts, usage, total, finished = [], {}, 0, False
     while True:
-        remaining = deadline-time.monotonic()
-        if remaining <= 0:
+        remaining = deadline-time.monotonic() if deadline is not None else None
+        if remaining is not None and remaining <= 0:
             raise TimeoutError('Judge time budget exceeded')
         # urllib's socket timeout is per read. Tighten it to the total remaining
         # budget so heartbeats cannot keep a completion alive indefinitely.

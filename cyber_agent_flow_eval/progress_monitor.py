@@ -1,6 +1,7 @@
 """Separate host-side checkpoint judge; never supplies a final trial verdict."""
 
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 import time
 
@@ -37,6 +38,8 @@ class ProgressMonitor:
         self.directory, self.task, self.config = Path(directory), task, deepcopy(config)
         self.progress = progress
         self.criteria = {}
+        self.observations = {}
+        self.targeted_steps = []
         self.checks = []
         self.snapshot = lambda destination: snapshot_local(self.directory, destination)
         self.completed = set()
@@ -57,12 +60,8 @@ class ProgressMonitor:
                     "Progress-check limit reached; no further automated assistance"
                 )
             timeout = min(
-                self.config["progress_timeout_seconds"],
-                (
-                    timeout_seconds
-                    if timeout_seconds is not None
-                    else self.config["progress_timeout_seconds"]
-                ),
+                self.config["progress_timeout_seconds"] or float("inf"),
+                timeout_seconds or float("inf"),
             )
             if timeout < 1:
                 raise JudgeError(
@@ -93,7 +92,7 @@ class ProgressMonitor:
             from .evidence_manifest import capture
 
             capture(source)
-            config = dict(self.config, timeout_seconds=remaining)
+            config = dict(self.config, timeout_seconds=0 if remaining == float("inf") else remaining)
             if self.progress:
                 self.progress(f"turn {turn}: checking intermediate challenge evidence")
             review_started = time.monotonic()
@@ -107,6 +106,13 @@ class ProgressMonitor:
                 purpose="progress",
             )
             check["judge_seconds"] = time.monotonic()-review_started
+            self.targeted_steps = []
+            for observation in verdict.get("observations", []):
+                self.targeted_steps.append(observation["step_id"])
+                previous = self.observations.get(observation["step_id"], {})
+                discoveries = list(dict.fromkeys(previous.get("discoveries", []) + observation["discoveries"]))[-16:]
+                self.observations[observation["step_id"]] = dict(observation, discoveries=discoveries, targets=list(dict.fromkeys(previous.get("targets", []) + observation.get("targets", [])))[-16:], turn=turn, audit=check["audit"])
+            check["observations"] = verdict.get("observations", [])
             new = False
             for finding in verdict["criteria"]:
                 previous = self.criteria.get(finding["id"])
@@ -182,12 +188,15 @@ class ProgressMonitor:
                     status=status,
                     eligible=set(step["requires"]) <= self.completed,
                     criterion_ids=step["criterion_ids"],
+                    requires=step["requires"], node_id=step["node_id"],
                 )
             )
         write_json(
             self.directory / "progress-monitor.json",
             dict(
-                version=1,
+                version=2,
+                updated_at=datetime.now(timezone.utc).isoformat(),
+                observations=self.observations, targeted_steps=self.targeted_steps,
                 role="progress-only; final judge scores independently",
                 checks=self.checks,
                 steps=steps,

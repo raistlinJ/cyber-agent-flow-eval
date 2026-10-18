@@ -250,8 +250,9 @@ def test_live_guest_snapshot_rejects_links_and_does_not_pack_inputs(tmp_path):
         guest_agent.dispatch(dict(op="pack", path=str(root), live=True, limit=1024))
 
 
+@pytest.mark.parametrize("release_hints", [True, False])
 def test_native_scaffold_runner_uses_checkpoints_then_independent_final_judge(
-    specification, tmp_path, monkeypatch  # noqa: F811 - pytest fixture injection
+    specification, tmp_path, monkeypatch, release_hints  # noqa: F811 - pytest fixture injection
 ):
     """Actual SF producer / evaluator, with only VM/model actions replaced."""
     import hashlib
@@ -312,7 +313,7 @@ def test_native_scaffold_runner_uses_checkpoints_then_independent_final_judge(
     raw.pop("tasks")
     raw["suite"] = dict(path=str(package), max_readiness_age_seconds=3600)
     raw["conditions"] = raw["conditions"][:1]
-    raw["execution"]["provide_progressive_hints"] = True
+    raw["execution"]["provide_progressive_hints"] = release_hints
     raw["execution"]["network_policy"] = dict(allow=["192.0.2.0/24"], disallow=[])
     raw["judge"] = dict(
         enabled=True,
@@ -351,6 +352,9 @@ def test_native_scaffold_runner_uses_checkpoints_then_independent_final_judge(
     def launch(directory, seconds, hint_controller):
         nonlocal reached
         assert "FIRST_PRIVATE" not in (directory / "input.json").read_text()
+        participant = read_json(directory / "input.json")
+        assert participant["execution"]["monitor_progress"] is True
+        assert participant["execution"]["provide_progressive_hints"] is release_hints
         references = read_json(directory / "reference-material.json")
         assert (
             references["attack_graph"]["nodes"][0]["generator"]["flag_value"]
@@ -374,6 +378,9 @@ def test_native_scaffold_runner_uses_checkpoints_then_independent_final_judge(
 
     row = run(specification, tmp_path / "evaluation", launcher=launch, progress=None)[0]
     assert row["verified_success"] is True and row["unassisted_success"] is True
+    from cyber_agent_flow_eval.reporting import results
+    assert results(tmp_path / "evaluation")["attempts"][0]["provide_progressive_hints"] is release_hints
+    assert row["provide_progressive_hints"] is release_hints
     assert row["progress_monitor_checks"] == 2 and row["progress_monitor_calls"] == 4
     assert purposes == ["progress", "progress", "final"]
     folder = tmp_path / "evaluation" / row["attempt_path"]

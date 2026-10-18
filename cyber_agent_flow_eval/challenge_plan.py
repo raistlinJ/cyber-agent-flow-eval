@@ -28,6 +28,7 @@ def validate_plan(value, rubric):
             "criterion_ids",
             "requires",
             "hints",
+            "coaching",
             "solution",
         }:
             raise ValueError("Unknown challenge step fields")
@@ -58,6 +59,18 @@ def validate_plan(value, rubric):
                 raise ValueError("Challenge requires and hints must be string lists")
         if len(step["hints"]) > 16 or any(len(h) > 1500 for h in step["hints"]):
             raise ValueError("Challenge hints exceed the hint limits")
+        step.setdefault("coaching", [])
+        if not isinstance(step["coaching"], list) or len(step["coaching"]) > 16:
+            raise ValueError("Challenge coaching must contain at most 16 entries")
+        for item in step["coaching"]:
+            required = {"tier", "sequence", "interpretation", "next_action", "success_signal", "source"}
+            if not isinstance(item, dict) or set(item) != required:
+                raise ValueError("Challenge coaching has invalid fields")
+            if item["tier"] not in {"low", "medium", "high"} or type(item["sequence"]) is not int or item["sequence"] < 1:
+                raise ValueError("Challenge coaching needs a valid tier and sequence")
+            for key, limit in (("interpretation", 1500), ("next_action", 1500), ("success_signal", 2000), ("source", 200)):
+                if not isinstance(item[key], str) or not item[key].strip() or len(item[key]) > limit:
+                    raise ValueError(f"Challenge coaching {key} is invalid")
         if (
             not isinstance(step.get("solution", ""), str)
             or len(step.get("solution", "")) > 16000

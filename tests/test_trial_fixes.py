@@ -21,8 +21,9 @@ def test_active_budget_excludes_wait_and_resumes_accounting():
     assert budget.wait_seconds == 600
 
 
+@pytest.mark.parametrize("monitor_only", [True, False])
 @pytest.mark.asyncio
-async def test_worker_waits_longer_than_active_budget_for_assistance(tmp_path, monkeypatch):
+async def test_worker_waits_longer_than_active_budget_for_assistance(tmp_path, monkeypatch, monitor_only):
     from cyber_agent_flow_eval import execution_service
     class Session:
         def __init__(self, **kwargs):
@@ -44,7 +45,7 @@ async def test_worker_waits_longer_than_active_budget_for_assistance(tmp_path, m
     result = await execute(dict(engine={}, model=dict(url='unused', provider='openai', name='test'),
         execution=dict(context_window=1024, max_turns=2, tool_timeout=1,
             network_policy=dict(allow=[], disallow=[]), wall_seconds=.15,
-            provide_progressive_hints=True, assistance_timeout_seconds=1),
+            provide_progressive_hints=not monitor_only, monitor_progress=monitor_only, assistance_timeout_seconds=1),
         server_command='unused', run_id='test', tools=[], guidance='', prompt='task'), tmp_path)
     await reply
     assert result['status'] == 'completed'

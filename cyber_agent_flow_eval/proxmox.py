@@ -316,8 +316,13 @@ class ProxmoxBackend:
         started = time.monotonic()
         assistance_seconds = 0.0
         input_limits = read_json(directory / 'input.json')['execution']
-        # Keep a finite systemd backstop even if the coordinator disconnects.
-        safety_seconds = seconds + (input_limits.get('max_turns', 1) * input_limits.get('assistance_timeout_seconds', 660) if hint_controller else 0) + 15
+        # Honor explicit unlimited active/assistance budgets at every backstop.
+        active_budget = seconds or float('inf')
+        assistance_limit = input_limits.get('assistance_timeout_seconds', 660)
+        safety_seconds = 0
+        if seconds and (not hint_controller or assistance_limit):
+            safety_seconds = seconds + (input_limits.get('max_turns', 1) * assistance_limit if hint_controller else 0) + 15
+        safety_deadline = started + safety_seconds if safety_seconds else float('inf')
         status = {}
         try:
             checkpoint('starting', execution_started_at=datetime.now(timezone.utc).isoformat())
@@ -325,7 +330,7 @@ class ProxmoxBackend:
                             user=self.config['user'], engine=self.engine,
                             environment_file=self.config.get('environment_file'))
             checkpoint('executing')
-            deadline = started + seconds + 15
+            deadline = started + active_budget + 15
             while True:
                 status = self.agent.call(self.vmid, 'status', unit=record['unit'],
                                          transcript_path=record['path'] + '/attempt',
@@ -334,7 +339,7 @@ class ProxmoxBackend:
                 checkpoint('executing', service_status=status)
                 if status.get('SubState') in {'exited', 'failed', 'dead'} or status.get('LoadState') == 'not-found':
                     break
-                if time.monotonic() >= min(deadline, started + safety_seconds):
+                if time.monotonic() >= min(deadline, safety_deadline):
                     status['Result'] = 'timeout'
                     break
                 if hint_controller:
@@ -348,10 +353,10 @@ class ProxmoxBackend:
                             waited = time.monotonic() - waiting
                             assistance_seconds += waited
                             active = request.get('participant_active_seconds')
-                            if type(active) in (int, float) and 0 <= active <= seconds:
+                            if type(active) in (int, float) and 0 <= active <= active_budget:
                                 # The worker pauses before publishing the request.
                                 # Use its clock to exclude guest/host transfer and polling delays too.
-                                deadline = time.monotonic() + seconds - active + 15
+                                deadline = time.monotonic() + active_budget - active + 15
                             else:
                                 deadline += waited
                             checkpoint('executing', assistance_wait_seconds=assistance_seconds,

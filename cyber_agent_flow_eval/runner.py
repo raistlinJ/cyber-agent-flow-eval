@@ -177,6 +177,7 @@ def stop_group(process):
 
 
 def launch(directory, seconds, hint_controller=None):
+    seconds = seconds or float('inf')
     engine = read_json(directory / 'input.json')['engine']
     env = dict(os.environ, CAF_RUN_BASE_DIR=str(directory),
                CAF_TOOLS_CONFIG_PATH=str(directory / 'catalog.json'))
@@ -338,8 +339,11 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
             participant_execution = {key: value for key, value in spec['execution'].items() if key not in {'target_lock', 'progress_seconds', 'hint_stalled_turns', 'max_tries_before_solution'}}
             hints_enabled = condition.get('provide_progressive_hints', spec['execution'].get('provide_progressive_hints', False))
             participant_execution['provide_progressive_hints'] = hints_enabled
-            if hints_enabled:
-                participant_execution['assistance_timeout_seconds'] = spec.get('judge', {}).get('progress_timeout_seconds', 600) + 60
+            monitor_enabled = bool(task.get('rubric') and spec.get('judge', {}).get('enabled') and spec.get('judge', {}).get('monitor_progress', True))
+            participant_execution['monitor_progress'] = monitor_enabled
+            if hints_enabled or monitor_enabled:
+                checkpoint_timeout = spec.get('judge', {}).get('progress_timeout_seconds', 600)
+                participant_execution['assistance_timeout_seconds'] = checkpoint_timeout + 60 if checkpoint_timeout else 0
             participant = {'model': spec['model'], 'execution': participant_execution, 'engine': spec['engine'],
                            'prompt': task['prompt'], 'tools': condition['tools'],
                            'guidance': '\n\n'.join(g['text'] for g in condition['guidance_snapshot']),
@@ -379,17 +383,18 @@ def run(spec_path, output, *, resume=False, retry_failed=False, launcher=launch,
                 execution_started = time.monotonic()
                 from .hints import HintController
                 hints = None
-                if hints_enabled:
+                if hints_enabled or monitor_enabled:
                     metadata = dict(spec.get('suite_snapshot', {}).get('task_metadata', {}).get(task['id'], {}), task_prompt=task['prompt'])
                     hints = HintController(directory, metadata, task['verifier'],
-                                           dict(spec['execution'], provide_progressive_hints=True),
-                                           task=task, judge=spec.get('judge'),
+                                           dict(spec['execution'], provide_progressive_hints=hints_enabled),
+                                           task=task, judge=spec.get('judge'), release_hints=hints_enabled,
                                            progress=(lambda message: progress(f'{trial["trial_id"]}: {message}')) if progress is not None else None)
-                    if not hints.available:
+                    if hints_enabled and not hints.available:
                         if progress is not None:
                             progress(f'{trial["trial_id"]}: progressive hints unavailable — {hints.unavailable_reason}')
                         participant['execution']['provide_progressive_hints'] = False
                         write_json(directory / 'input.json', participant)
+                    if not hints.available and not hints.monitor:
                         hints = None
                 result = (backend.launch if backend else launcher)(directory, spec['execution']['wall_seconds'],
                          **({'hint_controller': hints} if hints else {}))

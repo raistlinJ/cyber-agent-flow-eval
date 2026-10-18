@@ -9,7 +9,7 @@ from .storage import write_json, read_json
 POLICY = {
     "version": 2,
     "stalled_turns": 2,
-    "max_hints": 3,
+    "max_hints": 12,
     "max_tries_before_solution": 6,
     "progress": "new declared fact in bounded tool output; otherwise new successful tool output",
 }
@@ -58,9 +58,11 @@ class HintController:
         task=None,
         judge=None,
         progress=None,
+        release_hints=True,
     ):
         self.directory, self.verifier = directory, verifier
         self.policy = resolve_policy(execution)
+        self.release_hints = release_hints
         self.last_observed_progress = 0
         self.tries_without_progress = 0
         self.started = time.monotonic()
@@ -134,18 +136,35 @@ class HintController:
                     )
         if self.plan:
             for step in self.plan["steps"]:
-                for index, text in enumerate(step.get("hints", [])):
-                    if not safe(text):
-                        raise ValueError("A challenge hint contains a verifier answer")
-                    self.hints.append(
-                        dict(
-                            id=step["id"] + "-hint-" + str(index + 1),
-                            text=text,
-                            source="scenario_guide",
-                            step_id=step["id"],
-                            node_id=step["node_id"],
+                coaching = step.get("coaching", [])
+                if coaching:
+                    for index, item in enumerate(coaching):
+                        values = [item.get(key, "") for key in ("interpretation", "next_action", "success_signal")]
+                        if not all(safe(text) for text in values):
+                            raise ValueError("A challenge coaching entry contains a verifier answer")
+                        self.hints.append(dict(
+                            id=step["id"] + "-coaching-" + str(index + 1),
+                            text=item["next_action"],
+                            source=item.get("source", "catalog_assistance"),
+                            step_id=step["id"], node_id=step["node_id"],
+                            tier=item["tier"], sequence=item["sequence"],
+                            interpretation=item["interpretation"],
+                            next_action=item["next_action"],
+                            success_signal=item["success_signal"],
+                        ))
+                else:
+                    for index, text in enumerate(step.get("hints", [])):
+                        if not safe(text):
+                            raise ValueError("A challenge hint contains a verifier answer")
+                        self.hints.append(
+                            dict(
+                                id=step["id"] + "-hint-" + str(index + 1),
+                                text=text,
+                                source="scenario_guide",
+                                step_id=step["id"],
+                                node_id=step["node_id"],
+                            )
                         )
-                    )
         solutions = metadata.get("challenge_solutions", [])
         if not isinstance(solutions, list):
             raise ValueError("challenge_solutions must be a list")
@@ -218,8 +237,7 @@ class HintController:
                     )
         self.available = bool(self.hints or self.solutions)
         if (
-            self.available
-            and task
+            task
             and task.get("rubric")
             and judge
             and judge.get("enabled")
@@ -237,6 +255,23 @@ class HintController:
         )
         self.save()
 
+    def _teammate_hint(self, candidate, current_step):
+        """Compose authored coaching with only evidence-grounded monitor context."""
+        if candidate.get("solution") or not candidate.get("next_action"):
+            return candidate["text"], None
+        observation = None
+        if self.monitor is not None and current_step:
+            observation = self.monitor.observations.get(current_step["id"])
+        lines = []
+        if observation and observation.get("summary"):
+            lines.append("What I observed: " + observation["summary"].strip())
+        if candidate.get("interpretation"):
+            lines.append("What that suggests: " + candidate["interpretation"].strip())
+        lines.append("What I would do next: " + candidate["next_action"].strip())
+        if candidate.get("success_signal"):
+            lines.append("What would confirm progress: " + candidate["success_signal"].strip())
+        return "\n".join(lines), observation
+
     def save(self):
         write_json(
             self.directory / "assistance.json",
@@ -246,6 +281,8 @@ class HintController:
                 progress_monitor_error=self.monitor_error,
                 completed_steps=sorted(self.completed_steps),
                 deferred_steps=sorted(self.deferred_steps),
+                active_step=self.active_step,
+                release_hints=self.release_hints,
                 tries_without_progress=self.tries_without_progress,
                 available=self.available,
                 unavailable_reason=self.unavailable_reason,
@@ -314,6 +351,10 @@ class HintController:
                 ):
                     self.completed_challenges.add(solution["node_id"])
                     new_progress = True
+        if not self.release_hints:
+            self.response = dict(sequence=turn, hint=None)
+            self.save()
+            return self.response
         if monitored and monitored["all_satisfied"]:
             final = request.get("final_answer")
             from .runner import verify
@@ -473,9 +514,10 @@ class HintController:
             )
             candidate = candidate or next(iter(eligible), None)
         if candidate:
-            hint = candidate["text"]
+            hint, observation = self._teammate_hint(candidate, current_step)
             event = dict(
                 candidate,
+                text=hint,
                 turn=turn,
                 at=datetime.now(timezone.utc).isoformat(),
                 elapsed_seconds=time.monotonic() - self.started,
@@ -496,6 +538,12 @@ class HintController:
                 event.update(
                     step_id=current_step["id"], node_id=current_step["node_id"]
                 )
+            if observation:
+                event['monitor_observation'] = {
+                    key: observation[key]
+                    for key in ('summary', 'discoveries', 'targets', 'evidence')
+                    if key in observation
+                }
             self.events.append(event)
             if candidate.get("reveals_fact"):
                 self.known.add(candidate["fact_id"])
@@ -547,6 +595,7 @@ class HintController:
 def metrics(directory, enabled, success):
     path = directory / "assistance.json"
     audit = read_json(path) if path.exists() else {}
+    enabled = audit.get("release_hints", enabled)
     events = audit.get("events", [])
     feedback = audit.get("retry_feedback", [])
     monitor_path = directory / "progress-monitor.json"

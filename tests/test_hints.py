@@ -278,3 +278,60 @@ def test_solution_suppresses_remaining_hints_for_current_challenge(tmp_path):
         'Medium hint',
         'Complete walkthrough with FLAG_ONE',
     ]
+
+
+def test_structured_coaching_is_composed_as_a_teammate_update(tmp_path):
+    rubric = {'version': 1, 'criteria': [dict(
+        id='criterion', requirement='Recover proof', evidence='Direct tool output')]}
+    plan = {'version': 1, 'steps': [dict(
+        id='step-001', node_id='node-1', title='Service',
+        criterion_ids=['criterion'], requires=[], hints=['Inspect the endpoint.'],
+        coaching=[dict(
+            tier='low', sequence=1,
+            interpretation='The endpoint is the strongest lead.',
+            next_action='Inspect the endpoint response and headers.',
+            success_signal='A response containing the target proof.',
+            source='catalog_assistance')],
+        solution='Walkthrough with PRIVATE')]}
+    controller = HintController(
+        tmp_path, {'challenge_plan': plan}, {'type': 'rubric', 'expected': rubric},
+        {'hint_stalled_turns': 1, 'max_tries_before_solution': 4})
+
+    released = controller.respond(request(1))['hint']
+
+    assert released == (
+        'What that suggests: The endpoint is the strongest lead.\n'
+        'What I would do next: Inspect the endpoint response and headers.\n'
+        'What would confirm progress: A response containing the target proof.'
+    )
+    event = read_json(tmp_path / 'assistance.json')['events'][0]
+    assert event['tier'] == 'low' and event['source'] == 'catalog_assistance'
+
+
+def test_teammate_update_uses_only_monitor_observation(tmp_path):
+    from types import SimpleNamespace
+
+    rubric = {'version': 1, 'criteria': [dict(
+        id='criterion', requirement='Recover proof', evidence='Direct output')]}
+    coaching = dict(
+        tier='medium', sequence=2,
+        interpretation='TLS is the stronger lead.',
+        next_action='Inspect the HTTPS response.',
+        success_signal='A response containing the proof.',
+        source='catalog_assistance')
+    plan = {'version': 1, 'steps': [dict(
+        id='step-001', node_id='node-1', title='Service',
+        criterion_ids=['criterion'], requires=[], hints=['Inspect HTTPS.'],
+        coaching=[coaching], solution='Private solution')]}
+    controller = HintController(
+        tmp_path, {'challenge_plan': plan}, {'type': 'rubric', 'expected': rubric})
+    controller.monitor = SimpleNamespace(observations={'step-001': {
+        'summary': 'Plain HTTP reset while the TLS handshake succeeded.',
+        'evidence': [{'file': 'events.jsonl', 'offset': 10, 'limit': 90}],
+    }})
+
+    text, observation = controller._teammate_hint(controller.hints[0], plan['steps'][0])
+
+    assert text.startswith('What I observed: Plain HTTP reset while the TLS handshake succeeded.')
+    assert 'What I would do next: Inspect the HTTPS response.' in text
+    assert observation['evidence'][0]['file'] == 'events.jsonl'

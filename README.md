@@ -399,7 +399,7 @@ file transfer returns successfully. Model turns/tokens are not streamed by this
 transport. Optional progress-write failures cannot bypass worker cleanup; the
 initial recovery journal remains mandatory before any guest mutation.
 
-Optional `execution.provide_progressive_hints: true` enables host-controlled assistance for ScenarioForge suites. The default is false. Task metadata supplies private `progressive_hints` (ordered strings, e.g. reviewed facilitator excerpts) and/or `discoverable_facts`. No complete guide or unreleased plan is uploaded to the participant. `execution.hint_stalled_turns` (default 2) controls how many turns without new observed fact evidence—or new successful output for tasks without declared facts—precede each ordinary hint; it must be smaller than `execution.max_turns` when hints are enabled. An incorrect final answer can also trigger a hint. Up to three ordinary hints are released within existing budgets. `execution.max_tries_before_solution` (default 6, range 1–1,000) controls how many agent turns without new progress precede the **current challenge's facilitator walkthrough and exact answer/flag**. New progress resets this count; hint releases do not. Full solutions are kept separately in private `challenge_solutions` metadata and released at most once per challenge. Once a challenge's solution is released, its remaining ordinary hints are suppressed while completion monitoring continues. Observed flags advance to the next unsolved challenge and reset its try count. Older packages with authored hints fall back to the reviewed task procedure/hints and verifier answer. Incorrect final answers before the limit can receive neutral retry feedback, audited as `retry_feedback` / `retries_requested`. Ordinary hints still exclude literal verifier answers; the gated solution deliberately includes them. Results separate `unassisted_success`, `hints_assisted_success` and `solution_assisted_success`, and record `solution_provided` / `solutions_released`. A success following answer disclosure is never classified as unassisted or hints-only success. Updated CAF `chat(progress_callback=...)` support is required when assistance is enabled and usable guidance is available. Results/CSV distinguish `hint_stalled_turns`, `hints_released`, `facts_revealed`, `assisted_success`, and `unassisted_success`; `assistance.json` preserves the policy and timestamped release audit. Releases are counted conservatively even if transport fails before delivery. If a task has no usable hint source, it runs unassisted and explicitly records `progressive_hints_available: false` with a reason; this does not fail the trial. Authored ordinary hints containing verifier answers still fail validation.
+Optional `execution.provide_progressive_hints: true` enables host-controlled assistance for ScenarioForge suites. The default is false. Task metadata supplies private structured coaching, legacy `progressive_hints`, and/or `discoverable_facts`. No complete guide or unreleased plan is uploaded to the participant. `execution.hint_stalled_turns` (default 2) controls how many turns without new observed fact evidence—or new successful output for tasks without declared facts—precede each ordinary hint; it must be smaller than `execution.max_turns` when hints are enabled. An incorrect final answer can also trigger a hint. Up to twelve authored coaching entries are released for the current challenge within existing budgets. `execution.max_tries_before_solution` (default 6, range 1–1,000) controls how many agent turns without new progress precede the **current challenge's facilitator walkthrough and exact answer/flag**. New progress resets this count; hint releases do not. Full solutions are kept separately in private `challenge_solutions` metadata and released at most once per challenge. Once a challenge's solution is released, its remaining ordinary hints are suppressed while completion monitoring continues. Observed flags advance to the next unsolved challenge and reset its try count. Older packages with authored hints fall back to the reviewed task procedure/hints and verifier answer. Incorrect final answers before the limit can receive neutral retry feedback, audited as `retry_feedback` / `retries_requested`. Ordinary hints still exclude literal verifier answers; the gated solution deliberately includes them. Results separate `unassisted_success`, `hints_assisted_success` and `solution_assisted_success`, and record `solution_provided` / `solutions_released`. A success following answer disclosure is never classified as unassisted or hints-only success. Updated CAF `chat(progress_callback=...)` support is required when assistance is enabled and usable guidance is available. Results/CSV distinguish `hint_stalled_turns`, `hints_released`, `facts_revealed`, `assisted_success`, and `unassisted_success`; `assistance.json` preserves the policy and timestamped release audit. Releases are counted conservatively even if transport fails before delivery. If a task has no usable hint source, it runs unassisted and explicitly records `progressive_hints_available: false` with a reason; this does not fail the trial. Authored ordinary hints containing verifier answers still fail validation.
 
 ### Judge agent
 
@@ -525,3 +525,54 @@ Judge citations use the actual returned byte range; requested limits at EOF are
 clipped to the file size, while citations to unread bytes remain invalid.
 
 Compatible OpenAI judge endpoints receive a JSON action schema to constrain syntax and action names. An explicit unsupported-schema rejection falls back to JSON-object mode within the same request time budget. Authentication and unrelated validation errors never trigger fallback. Host rubric and evidence validation still determine whether a verdict is accepted.
+
+
+### Visual Monitor observations
+
+When a rubric task uses an enabled judge with `monitor_progress: true`, the host
+reviews intermediate CAF execution evidence even if progressive hints are off.
+Monitoring and releasing assistance are separate: disabling hints supplies no
+hint, answer, retry instruction or walkthrough to the participant. Existing
+checkpoint callbacks carry these observations; no extra guest agent is needed.
+
+Progress verdicts can include bounded, cited challenge observations (`step_id`,
+`activity`, `summary`, `discoveries`, `evidence`). These describe attempted targets
+and discoveries; only rubric findings complete a challenge. Unknown steps,
+unread ranges, and reference-only or claim-only observations are rejected.
+`progress-monitor.json` records observations, latest focus, checkpoint audits,
+dependencies and timestamps. Released guidance remains in `assistance.json`.
+The final judge independently reviews the trial; monitor judgments never replace
+its verdict. The orchestrator's **Visualize** tab renders these saved artifacts.
+
+
+### Optional timeouts
+
+Set `execution.wall_seconds`, `execution.tool_timeout`, `judge.timeout_seconds`,
+or `judge.progress_timeout_seconds` to **0** for **no timeout**. Positive values
+keep their normal meaning in seconds. The orchestrator exposes this as a checkbox
+beside each time limit, without changing the finite defaults.
+
+**No timeout can cause an infinite wait when a tool or model server hangs.**
+Other enabled time, turn, token, size and checkpoint-count limits still apply.
+Unlimited tools skip CAF elapsed/idle timeout checkpoints but remain cancellable;
+command-specific options can still impose their own limits. Unlimited judge and
+monitor reviews disable their HTTP/stream deadline and their assistance wait
+limit. When required, the guest systemd runtime backstop is also disabled; an
+orphaned run may need manual cleanup if its coordinator is lost. Tool support
+requires the updated CyberAgentFlow checkout on the participant.
+
+## Evidence-grounded teammate assistance
+
+Version 1 challenge plans may include ordered structured `coaching` entries in
+addition to legacy hint strings. Each entry contains its tier, interpretation,
+next action, expected success signal, and source. Up to twelve authored entries
+may be released for the current challenge within the existing turn and solution
+budgets.
+
+When progress monitoring is enabled, a released message contains the monitor's
+directly cited observation (when available), the authored interpretation, the
+authored next action, and the authored success signal. If no supported
+observation exists, the message omits “What I observed” rather than inventing
+one. `assistance.json` retains these fields, tier, provenance, and monitor
+citations. Solutions still come from the frozen facilitator walkthrough and
+answer, and a solution suppresses remaining hints for that challenge.
