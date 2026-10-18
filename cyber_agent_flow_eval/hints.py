@@ -409,6 +409,21 @@ class HintController:
             ),
             None,
         )
+        current_node_id = (
+            current_step["node_id"]
+            if current_step
+            else current.get("node_id") if current else None
+        )
+        current_solution_release = next(
+            (
+                event
+                for event in self.events
+                if event.get("solution")
+                and current_node_id
+                and event.get("node_id") == current_node_id
+            ),
+            None,
+        )
         candidate = (
             current if solution_due and current and current["id"] not in used else None
         )
@@ -423,6 +438,7 @@ class HintController:
         )
         if (
             candidate is None
+            and current_solution_release is None
             and hint_count < self.policy["max_hints"]
             and (
                 failed_final

@@ -230,3 +230,51 @@ def test_only_current_challenge_walkthrough_and_flag_are_released(tmp_path):
     assert metrics_row['solution_assisted_success'] and not metrics_row['unassisted_success']
     assert not metrics_row['hints_assisted_success']
     assert controller.respond(request(6,final='FLAG_ONE FLAG_TWO'))['hint'] is None
+
+
+def test_solution_suppresses_remaining_hints_for_current_challenge(tmp_path):
+    plan = {
+        'version': 1,
+        'steps': [
+            dict(
+                id='step-001',
+                node_id='node-1',
+                title='First challenge',
+                criterion_ids=['step-001-complete'],
+                requires=[],
+                hints=['Low hint', 'Medium hint', 'High hint'],
+                solution='Complete walkthrough with FLAG_ONE',
+            )
+        ],
+    }
+    rubric = {
+        'version': 1,
+        'criteria': [
+            dict(
+                id='step-001-complete',
+                requirement='Recover the flag',
+                evidence='Observed tool output',
+            )
+        ],
+    }
+    controller = HintController(
+        tmp_path,
+        {'challenge_plan': plan},
+        {'type': 'rubric', 'expected': rubric},
+        {'max_tries_before_solution': 3, 'hint_stalled_turns': 1},
+    )
+
+    assert controller.respond(request(1))['hint'] == 'Low hint'
+    assert controller.respond(request(2))['hint'] == 'Medium hint'
+    assert controller.respond(request(3))['hint'] == 'Complete walkthrough with FLAG_ONE'
+    assert controller.respond(request(4))['hint'] is None
+    assert controller.respond(request(5))['hint'] is None
+
+    audit = metrics(tmp_path, True, False)
+    assert audit['hints_released'] == 2
+    assert audit['solutions_released'] == 1
+    assert [event['text'] for event in audit['assistance']['events']] == [
+        'Low hint',
+        'Medium hint',
+        'Complete walkthrough with FLAG_ONE',
+    ]
